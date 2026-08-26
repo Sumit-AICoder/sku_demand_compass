@@ -1,0 +1,69 @@
+# Unobserved Components Model configuration (Phase 5).
+#
+# Target: log monthly tractor registrations per district. Log so the exogenous
+# coefficients read as elasticities -- a 1-sd rise in the regressor moves sales by
+# beta * 100 percent.
+
+target:
+  table: district_series.parquet
+  y: tractor_registrations
+  log_transform: true
+  freq: M
+
+specification:
+  level: "local linear trend"     # structural growth in mechanisation
+  stochastic_level: true
+  stochastic_trend: true
+  seasonal: 12                    # Kharif / Rabi / Zaid buying rhythm
+  stochastic_seasonal: true
+  cycle: true                     # agri credit / commodity price cycle
+  damped_cycle: true
+  stochastic_cycle: true
+  cycle_period_bounds_months: [24, 72]
+  mle_regression: true
+  concentrate_scale: true
+
+estimation:
+  maxiter: 120
+  method: lbfgs
+  min_observations: 60            # below this, a district falls back to the pooled model
+  n_jobs: 0                       # 0 = use all cores
+
+# Regressors, with the sign the Excel "Factors Listings" sheet asserts. A fitted beta
+# whose sign contradicts this is reported and NOT used as a score weight.
+regressors:
+  - {name: rainfall_departure, expected_sign: positive, factor: F7, label: "Rainfall departure from normal"}
+  - {name: reservoir_status,   expected_sign: positive, factor: F7, label: "Reservoir storage vs normal"}
+  - {name: ndvi_anomaly,       expected_sign: positive, factor: F7, label: "NDVI anomaly (crop health)"}
+  - {name: mandi_price_index,  expected_sign: positive, factor: F1, label: "Mandi modal price index"}
+  - {name: msp_change,         expected_sign: positive, factor: F1, label: "MSP change, dominant crop"}
+  - {name: credit_depth,       expected_sign: positive, factor: F1, label: "KCC / rural credit depth"}
+  - {name: subsidy_intensity,  expected_sign: positive, factor: F6, label: "SMAM / state subsidy intensity"}
+  - {name: rural_wage_index,   expected_sign: positive, factor: F4, label: "Rural wage index (labour substitution)"}
+  - {name: diesel_price,       expected_sign: negative, factor: F1, label: "Retail diesel price"}
+  - {name: fertilizer_offtake, expected_sign: positive, factor: F1, label: "Fertilizer offtake per ha"}
+  - {name: pmfby_claims,       expected_sign: positive, factor: F7, label: "PMFBY claims paid"}
+
+multicollinearity:
+  vif_threshold: 8.0
+  action: report                  # report and flag; do not silently drop correlated agri drivers
+
+diagnostics:
+  ljung_box_lags: 12
+  alpha: 0.05
+  backtest_horizon: 12
+  # A district model that cannot beat seasonal-naive out of sample is marked
+  # unusable and its betas are excluded from the weight substitution.
+  require_beat_seasonal_naive: true
+
+significance:
+  alpha: 0.10                     # 90% intervals, per the plan
+  # Betas that are insignificant, wrong-signed, or come from an unusable model fall
+  # back to the judgmental prior in weights.yaml and are badged "prior" in the UI.
+
+pooling:
+  # Empirical-Bayes shrinkage of district betas toward the group mean. Districts with
+  # noisy or short series get pulled harder toward the pool.
+  enabled: true
+  group_by: cluster               # falls back to state before clustering exists
+  shrinkage_prior_weight: 6.0

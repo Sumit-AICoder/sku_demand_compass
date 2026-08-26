@@ -1,0 +1,102 @@
+# Judgmental PRIORS for the factor weights w_i(sku).
+# These are used only where UCM produces no significant, correctly-signed beta for the
+# factor (Phase 5). Every weight the UI shows carries an origin badge: ucm | prior.
+#
+# Defaults are seeded from the Excel "Strategic View: Top 5 Drivers of Implement Demand":
+#   1 Tractor population growth   -> F3
+#   2 Farm income and realisation -> F1
+#   3 Government subsidies        -> F6
+#   4 Labour shortage/wages       -> F4
+#   5 Crop pattern / regional mech-> F5
+# Weights are normalised to sum to 1.0 at load time.
+
+default:
+  F1: 0.18   # farm economics
+  F2: 0.08   # land holding
+  F3: 0.22   # tractor base   <- top driver
+  F4: 0.13   # mechanisation
+  F5: 0.11   # cropping pattern
+  F6: 0.12   # policy & subsidy
+  F7: 0.06   # monsoon & water
+  F8: -0.05  # custom hiring suppresses ownership demand
+  F9: 0.05   # technology
+  F10: 0.10  # distribution
+
+# Category-level overrides. Only listed factors change; the rest inherit `default`.
+by_category:
+  tillage:
+    F3: 0.26          # most tightly coupled to tractor base
+    F2: 0.10
+  sowing:
+    F5: 0.16          # crop-pattern driven
+    F6: 0.15
+  crop_protection:
+    F5: 0.18          # crop mix decides sprayer type
+    F4: 0.16          # labour substitution is the core pitch
+    F3: 0.14
+  irrigation:
+    F7: 0.24          # water availability is the whole thesis
+    F1: 0.16
+    F3: 0.12
+  harvesting:
+    F4: 0.22          # labour scarcity drives harvest mechanisation
+    F8: -0.12         # heavily rental-substituted
+    F2: 0.12
+  residue:
+    F6: 0.30          # policy-led category, per the Excel
+    F5: 0.16
+    F8: -0.10
+  post_harvest:
+    F1: 0.20
+    F3: 0.16
+    F10: 0.14
+  haulage:
+    F3: 0.34          # essentially a function of tractor ownership
+    F1: 0.14
+    F8: -0.03
+  precision:
+    F9: 0.26          # technology readiness dominates
+    F1: 0.16
+    F2: 0.12
+    F8: -0.14         # service-model delivered, not owned
+
+# SKU-level overrides for the cases the Excel calls out explicitly.
+by_sku:
+  SUPER_SEEDER:
+    F6: 0.34          # "Policy-led growth in residue-burning states"
+    F5: 0.18
+    F3: 0.16
+  HAPPY_SEEDER:
+    F6: 0.34
+    F5: 0.18
+    F3: 0.16
+  ROUND_BALER:
+    F6: 0.28
+    F8: -0.16         # contractor economics
+    F2: 0.14
+  LASER_LEVELER:
+    F7: 0.22          # irrigated-North thesis
+    F8: -0.18         # "high upfront cost favors CHC"
+    F2: 0.14
+  ORCHARD_SPRAYER:
+    F5: 0.28          # pure horticulture play
+    F9: 0.12
+    F1: 0.16
+  AGRI_DRONE:
+    F9: 0.30
+    F6: 0.16          # DGCA/PIB demo push
+    F8: -0.18         # service model
+  TROLLEY_2W_5T:
+    F3: 0.40          # "often bundled with tractor ownership"
+    F10: 0.12
+    F8: -0.02
+  RICE_TRANSPLANTER:
+    F4: 0.24          # labour-saving thesis
+    F5: 0.20
+    F8: -0.14
+
+# Guardrails applied after UCM substitution
+constraints:
+  min_weight: -0.25
+  max_weight: 0.45
+  renormalise: true          # positive weights renormalised to sum 1.0; negatives kept as penalties

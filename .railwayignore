@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.env
+.env.local
+web/node_modules/
+web/dist/
+web/public/sku/
+data/raw/
+data/chat_sessions.json
+data/curated/
+data/marts/
+*.log

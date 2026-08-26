@@ -1,0 +1,606 @@
+# Sonalika implement SKU catalogue.
+# Structure derived from Wireframe.xlsx sheets "Agri Lifecycle" (category taxonomy) and
+# "Application" (HP band, farm-size suitability, mechanisation maturity).
+# hp_min/hp_max gate which slice of the village tractor base is addressable (Phase 7).
+# crop_fit weights map the village crop-mix vector onto implement relevance.
+# season lists the months (1-12) of peak demand, from the "Seasonality" sheet; these are
+# priors only -- UCM-estimated gamma_t overrides them where the series supports it.
+
+meta:
+  source_sheets: [Agri Lifecycle, Application, Seasonality]
+  currency: INR
+  notes: >
+    Prices are indicative market ranges used for value-weighting the demand potential,
+    not Sonalika list prices. life_years drives the replacement-demand echo.
+
+categories:
+  tillage:        {label: "Tillage & land preparation", order: 1}
+  sowing:         {label: "Sowing / planting / transplanting", order: 2}
+  crop_protection: {label: "Crop protection & fertilisation", order: 3}
+  irrigation:     {label: "Irrigation-related", order: 4}
+  harvesting:     {label: "Harvesting", order: 5}
+  residue:        {label: "Residue management", order: 6}
+  post_harvest:   {label: "Post-harvest", order: 7}
+  haulage:        {label: "Haulage", order: 8}
+  precision:      {label: "Precision / digital / autonomous", order: 9}
+
+skus:
+  # ---------------- Tillage & land preparation ----------------
+  - id: ROTAVATOR_5FT
+    name: "Rotavator / Rotary Tiller 5 ft"
+    category: tillage
+    hp_min: 35
+    hp_max: 50
+    farm_size_fit: {marginal: 0.5, small: 0.9, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 0.8, soybean: 0.9, maize: 0.9, sugarcane: 0.7, pulses: 0.8, oilseeds: 0.8, horticulture: 0.6}
+    season: [4, 5, 6, 10, 11]
+    maturity: mature
+    price_inr: 78000
+    life_years: 8
+    attach_rate_ceiling: 0.55   # max plausible implements per tractor in-market
+    rental_substitutable: 0.35  # share of demand CHCs can absorb
+    compete_intensity: 0.85     # Shaktiman/Fieldking dominate; high headwind
+
+  - id: ROTAVATOR_7FT
+    name: "Rotavator / Rotary Tiller 7 ft"
+    category: tillage
+    hp_min: 50
+    hp_max: 75
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.8, soybean: 0.9, maize: 0.9, sugarcane: 0.8, pulses: 0.7, oilseeds: 0.7, horticulture: 0.4}
+    season: [4, 5, 6, 10, 11]
+    maturity: mature
+    price_inr: 108000
+    life_years: 8
+    attach_rate_ceiling: 0.30
+    rental_substitutable: 0.40
+    compete_intensity: 0.80
+
+  - id: CULTIVATOR_9T
+    name: "Spring Loaded Cultivator 9 Tyne"
+    category: tillage
+    hp_min: 30
+    hp_max: 50
+    farm_size_fit: {marginal: 0.6, small: 1.0, semi_medium: 1.0, medium: 0.8, large: 0.6}
+    crop_fit: {wheat: 1.0, rice: 0.7, cotton: 0.9, soybean: 1.0, maize: 0.9, sugarcane: 0.6, pulses: 1.0, oilseeds: 1.0, horticulture: 0.3}
+    season: [4, 5, 10, 11]
+    maturity: mature
+    price_inr: 42000
+    life_years: 10
+    attach_rate_ceiling: 0.60
+    rental_substitutable: 0.20
+    compete_intensity: 0.90     # heavy local-fabricator competition
+
+  - id: DISC_HARROW_16
+    name: "Disc Harrow 16 Disc"
+    category: tillage
+    hp_min: 35
+    hp_max: 60
+    farm_size_fit: {marginal: 0.3, small: 0.7, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.9, rice: 0.7, cotton: 1.0, soybean: 1.0, maize: 0.9, sugarcane: 0.9, pulses: 0.8, oilseeds: 0.9, horticulture: 0.4}
+    season: [4, 5, 6, 10]
+    maturity: mature
+    price_inr: 65000
+    life_years: 10
+    attach_rate_ceiling: 0.35
+    rental_substitutable: 0.25
+    compete_intensity: 0.85
+
+  - id: MB_PLOUGH_2F
+    name: "Mould Board Plough 2 Furrow"
+    category: tillage
+    hp_min: 35
+    hp_max: 55
+    farm_size_fit: {marginal: 0.4, small: 0.8, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 0.9, rice: 0.8, cotton: 0.9, soybean: 0.9, maize: 0.8, sugarcane: 1.0, pulses: 0.8, oilseeds: 0.8, horticulture: 0.5}
+    season: [4, 5, 6]
+    maturity: mature
+    price_inr: 48000
+    life_years: 12
+    attach_rate_ceiling: 0.30
+    rental_substitutable: 0.25
+    compete_intensity: 0.85
+
+  - id: REV_PLOUGH_2F
+    name: "Hydraulic Reversible Plough 2 Furrow"
+    category: tillage
+    hp_min: 50
+    hp_max: 90
+    farm_size_fit: {marginal: 0.0, small: 0.2, semi_medium: 0.6, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.8, cotton: 0.9, soybean: 0.8, maize: 0.8, sugarcane: 1.0, pulses: 0.6, oilseeds: 0.7, horticulture: 0.4}
+    season: [4, 5, 6]
+    maturity: premium
+    price_inr: 165000
+    life_years: 12
+    attach_rate_ceiling: 0.12
+    rental_substitutable: 0.30
+    compete_intensity: 0.60     # premium; John Deere/Maschio, fewer local players
+    soil_affinity: {hard: 1.0, medium: 0.7, soft: 0.3}   # deep tillage in hard soils
+
+  - id: POWER_HARROW
+    name: "Power Harrow"
+    category: tillage
+    hp_min: 50
+    hp_max: 90
+    farm_size_fit: {marginal: 0.0, small: 0.2, semi_medium: 0.5, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.6, cotton: 0.7, soybean: 0.8, maize: 0.9, sugarcane: 0.7, pulses: 0.6, oilseeds: 0.7, horticulture: 0.9}
+    season: [4, 5, 10, 11]
+    maturity: premium
+    price_inr: 195000
+    life_years: 10
+    attach_rate_ceiling: 0.08
+    rental_substitutable: 0.35
+    compete_intensity: 0.55
+    soil_affinity: {hard: 0.9, medium: 1.0, soft: 0.6}
+
+  - id: SUBSOILER
+    name: "Subsoiler / Chisel Plough"
+    category: tillage
+    hp_min: 50
+    hp_max: 90
+    farm_size_fit: {marginal: 0.1, small: 0.3, semi_medium: 0.7, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.8, rice: 0.6, cotton: 1.0, soybean: 0.9, maize: 0.8, sugarcane: 1.0, pulses: 0.7, oilseeds: 0.8, horticulture: 0.6}
+    season: [4, 5, 6]
+    maturity: emerging
+    price_inr: 72000
+    life_years: 12
+    attach_rate_ceiling: 0.10
+    rental_substitutable: 0.45
+    compete_intensity: 0.65
+    soil_affinity: {hard: 1.0, medium: 0.6, soft: 0.2}   # hardpan breaking
+
+  - id: LASER_LEVELER
+    name: "Laser Land Leveler"
+    category: tillage
+    hp_min: 50
+    hp_max: 90
+    farm_size_fit: {marginal: 0.0, small: 0.2, semi_medium: 0.6, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 0.6, soybean: 0.5, maize: 0.7, sugarcane: 0.8, pulses: 0.5, oilseeds: 0.5, horticulture: 0.3}
+    season: [4, 5, 10, 11]
+    maturity: rental_led
+    price_inr: 320000
+    life_years: 10
+    attach_rate_ceiling: 0.04
+    rental_substitutable: 0.75   # CHC-dominated economics
+    compete_intensity: 0.55
+    requires_irrigation: true    # only meaningful in irrigated systems
+
+  # ---------------- Sowing / planting / transplanting ----------------
+  - id: SEED_DRILL_11T
+    name: "Seed Drill 11 Tyne"
+    category: sowing
+    hp_min: 35
+    hp_max: 55
+    farm_size_fit: {marginal: 0.4, small: 0.9, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 1.0, rice: 0.3, cotton: 0.4, soybean: 1.0, maize: 0.8, sugarcane: 0.2, pulses: 1.0, oilseeds: 1.0, horticulture: 0.1}
+    season: [10, 11, 12]
+    maturity: mature
+    price_inr: 62000
+    life_years: 10
+    attach_rate_ceiling: 0.35
+    rental_substitutable: 0.30
+    compete_intensity: 0.85
+
+  - id: SEED_FERT_DRILL_13T
+    name: "Seed cum Fertilizer Drill 13 Tyne"
+    category: sowing
+    hp_min: 40
+    hp_max: 60
+    farm_size_fit: {marginal: 0.2, small: 0.7, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 1.0, rice: 0.3, cotton: 0.5, soybean: 1.0, maize: 0.9, sugarcane: 0.2, pulses: 1.0, oilseeds: 1.0, horticulture: 0.1}
+    season: [10, 11, 12]
+    maturity: mature
+    price_inr: 85000
+    life_years: 10
+    attach_rate_ceiling: 0.28
+    rental_substitutable: 0.30
+    compete_intensity: 0.80
+
+  - id: SUPER_SEEDER
+    name: "Super Seeder"
+    category: sowing
+    hp_min: 50
+    hp_max: 75
+    farm_size_fit: {marginal: 0.0, small: 0.3, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.1, soybean: 0.2, maize: 0.3, sugarcane: 0.1, pulses: 0.2, oilseeds: 0.2, horticulture: 0.0}
+    season: [10, 11]
+    maturity: policy_led
+    price_inr: 230000
+    life_years: 8
+    attach_rate_ceiling: 0.10
+    rental_substitutable: 0.65
+    compete_intensity: 0.70
+    requires_residue: true       # gated on paddy-residue burden
+
+  - id: HAPPY_SEEDER
+    name: "Happy Seeder"
+    category: sowing
+    hp_min: 45
+    hp_max: 65
+    farm_size_fit: {marginal: 0.0, small: 0.3, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.1, soybean: 0.1, maize: 0.2, sugarcane: 0.1, pulses: 0.1, oilseeds: 0.1, horticulture: 0.0}
+    season: [10, 11]
+    maturity: policy_led
+    price_inr: 175000
+    life_years: 8
+    attach_rate_ceiling: 0.08
+    rental_substitutable: 0.65
+    compete_intensity: 0.70
+    requires_residue: true
+
+  - id: PNEUMATIC_PLANTER
+    name: "Pneumatic Precision Planter"
+    category: sowing
+    hp_min: 50
+    hp_max: 75
+    farm_size_fit: {marginal: 0.0, small: 0.2, semi_medium: 0.6, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.2, rice: 0.1, cotton: 1.0, soybean: 0.8, maize: 1.0, sugarcane: 0.3, pulses: 0.5, oilseeds: 0.6, horticulture: 0.8}
+    season: [5, 6, 7]
+    maturity: emerging
+    price_inr: 285000
+    life_years: 10
+    attach_rate_ceiling: 0.05
+    rental_substitutable: 0.45
+    compete_intensity: 0.55
+
+  - id: MULTICROP_PLANTER
+    name: "Multi-crop Planter"
+    category: sowing
+    hp_min: 40
+    hp_max: 60
+    farm_size_fit: {marginal: 0.1, small: 0.5, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.5, rice: 0.2, cotton: 0.9, soybean: 1.0, maize: 1.0, sugarcane: 0.4, pulses: 0.8, oilseeds: 0.9, horticulture: 0.5}
+    season: [5, 6, 7, 10]
+    maturity: emerging
+    price_inr: 125000
+    life_years: 10
+    attach_rate_ceiling: 0.12
+    rental_substitutable: 0.40
+    compete_intensity: 0.70
+
+  - id: RAISED_BED_PLANTER
+    name: "Raised Bed Planter"
+    category: sowing
+    hp_min: 45
+    hp_max: 65
+    farm_size_fit: {marginal: 0.0, small: 0.3, semi_medium: 0.8, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.9, rice: 0.2, cotton: 0.9, soybean: 0.7, maize: 0.9, sugarcane: 0.8, pulses: 0.6, oilseeds: 0.6, horticulture: 0.9}
+    season: [10, 11, 1, 2]
+    maturity: emerging
+    price_inr: 118000
+    life_years: 10
+    attach_rate_ceiling: 0.06
+    rental_substitutable: 0.45
+    compete_intensity: 0.60
+    requires_irrigation: true
+
+  - id: RICE_TRANSPLANTER
+    name: "Rice Transplanter"
+    category: sowing
+    hp_min: 0
+    hp_max: 999      # self-propelled; not gated on tractor base
+    self_propelled: true
+    farm_size_fit: {marginal: 0.3, small: 0.7, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.0, rice: 1.0, cotton: 0.0, soybean: 0.0, maize: 0.0, sugarcane: 0.0, pulses: 0.0, oilseeds: 0.0, horticulture: 0.0}
+    season: [6, 7, 8]
+    maturity: rental_led
+    price_inr: 340000
+    life_years: 8
+    attach_rate_ceiling: 0.05
+    rental_substitutable: 0.70
+    compete_intensity: 0.50
+
+  # ---------------- Crop protection & fertilisation ----------------
+  - id: BOOM_SPRAYER
+    name: "Tractor Mounted Boom Sprayer"
+    category: crop_protection
+    hp_min: 25
+    hp_max: 60
+    farm_size_fit: {marginal: 0.3, small: 0.8, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.8, rice: 0.7, cotton: 1.0, soybean: 1.0, maize: 0.8, sugarcane: 0.7, pulses: 0.9, oilseeds: 0.9, horticulture: 0.6}
+    season: [7, 8, 9, 12, 1]
+    maturity: growth
+    price_inr: 68000
+    life_years: 8
+    attach_rate_ceiling: 0.30
+    rental_substitutable: 0.35
+    compete_intensity: 0.75
+
+  - id: ORCHARD_SPRAYER
+    name: "Orchard / Air-blast Sprayer"
+    category: crop_protection
+    hp_min: 25
+    hp_max: 55
+    farm_size_fit: {marginal: 0.2, small: 0.7, semi_medium: 1.0, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.0, rice: 0.0, cotton: 0.2, soybean: 0.0, maize: 0.0, sugarcane: 0.2, pulses: 0.0, oilseeds: 0.0, horticulture: 1.0}
+    season: [6, 7, 8, 9, 10]
+    maturity: growth
+    price_inr: 145000
+    life_years: 8
+    attach_rate_ceiling: 0.10
+    rental_substitutable: 0.25
+    compete_intensity: 0.55      # MITRA (Mahindra) is the specialist incumbent
+
+  - id: HTP_SPRAYER
+    name: "HTP Sprayer"
+    category: crop_protection
+    hp_min: 20
+    hp_max: 45
+    farm_size_fit: {marginal: 0.7, small: 1.0, semi_medium: 0.9, medium: 0.7, large: 0.5}
+    crop_fit: {wheat: 0.6, rice: 0.6, cotton: 1.0, soybean: 0.8, maize: 0.7, sugarcane: 0.6, pulses: 0.8, oilseeds: 0.8, horticulture: 1.0}
+    season: [7, 8, 9, 12, 1]
+    maturity: mature
+    price_inr: 32000
+    life_years: 6
+    attach_rate_ceiling: 0.40
+    rental_substitutable: 0.20
+    compete_intensity: 0.90
+
+  - id: FERT_BROADCASTER
+    name: "Fertilizer Broadcaster"
+    category: crop_protection
+    hp_min: 30
+    hp_max: 60
+    farm_size_fit: {marginal: 0.3, small: 0.8, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.8, soybean: 0.9, maize: 0.9, sugarcane: 0.9, pulses: 0.7, oilseeds: 0.8, horticulture: 0.5}
+    season: [6, 7, 11, 12]
+    maturity: growth
+    price_inr: 38000
+    life_years: 8
+    attach_rate_ceiling: 0.22
+    rental_substitutable: 0.30
+    compete_intensity: 0.80
+
+  # ---------------- Irrigation ----------------
+  - id: PTO_PUMP
+    name: "PTO Driven Irrigation Pump"
+    category: irrigation
+    hp_min: 30
+    hp_max: 60
+    farm_size_fit: {marginal: 0.5, small: 1.0, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 0.9, rice: 1.0, cotton: 0.8, soybean: 0.7, maize: 0.8, sugarcane: 1.0, pulses: 0.7, oilseeds: 0.7, horticulture: 0.9}
+    season: [2, 3, 4, 11, 12]
+    maturity: mature
+    price_inr: 28000
+    life_years: 8
+    attach_rate_ceiling: 0.25
+    rental_substitutable: 0.15
+    compete_intensity: 0.85
+    requires_irrigation: true
+
+  - id: WATER_TANKER_3000L
+    name: "Tractor Water Tanker 3000 L"
+    category: irrigation
+    hp_min: 35
+    hp_max: 60
+    farm_size_fit: {marginal: 0.3, small: 0.8, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 0.5, rice: 0.4, cotton: 0.8, soybean: 0.7, maize: 0.7, sugarcane: 0.8, pulses: 0.7, oilseeds: 0.7, horticulture: 1.0}
+    season: [3, 4, 5, 6]
+    maturity: mature
+    price_inr: 95000
+    life_years: 12
+    attach_rate_ceiling: 0.12
+    rental_substitutable: 0.35
+    compete_intensity: 0.85
+
+  # ---------------- Harvesting ----------------
+  - id: REAPER_BINDER
+    name: "Reaper Binder"
+    category: harvesting
+    hp_min: 0
+    hp_max: 999
+    self_propelled: true
+    farm_size_fit: {marginal: 0.5, small: 1.0, semi_medium: 1.0, medium: 0.8, large: 0.5}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 0.1, soybean: 0.5, maize: 0.4, sugarcane: 0.1, pulses: 0.8, oilseeds: 0.7, horticulture: 0.0}
+    season: [3, 4, 10, 11]
+    maturity: growth
+    price_inr: 185000
+    life_years: 8
+    attach_rate_ceiling: 0.08
+    rental_substitutable: 0.55
+    compete_intensity: 0.70
+
+  - id: TRACTOR_REAPER
+    name: "Tractor Mounted Reaper"
+    category: harvesting
+    hp_min: 35
+    hp_max: 60
+    farm_size_fit: {marginal: 0.3, small: 0.8, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.1, soybean: 0.6, maize: 0.5, sugarcane: 0.1, pulses: 0.8, oilseeds: 0.7, horticulture: 0.0}
+    season: [3, 4, 10, 11]
+    maturity: growth
+    price_inr: 92000
+    life_years: 8
+    attach_rate_ceiling: 0.12
+    rental_substitutable: 0.50
+    compete_intensity: 0.75
+
+  - id: POTATO_HARVESTER
+    name: "Potato / Groundnut Harvester"
+    category: harvesting
+    hp_min: 45
+    hp_max: 70
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.9, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.0, rice: 0.0, cotton: 0.0, soybean: 0.0, maize: 0.0, sugarcane: 0.0, pulses: 0.2, oilseeds: 0.9, horticulture: 1.0}
+    season: [1, 2, 3, 10, 11]
+    maturity: emerging
+    price_inr: 165000
+    life_years: 10
+    attach_rate_ceiling: 0.04
+    rental_substitutable: 0.55
+    compete_intensity: 0.60
+
+  # ---------------- Residue management ----------------
+  - id: STRAW_REAPER
+    name: "Straw Reaper"
+    category: residue
+    hp_min: 45
+    hp_max: 70
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.9, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.7, cotton: 0.1, soybean: 0.2, maize: 0.3, sugarcane: 0.1, pulses: 0.3, oilseeds: 0.3, horticulture: 0.0}
+    season: [4, 5]
+    maturity: policy_led
+    price_inr: 215000
+    life_years: 10
+    attach_rate_ceiling: 0.07
+    rental_substitutable: 0.60
+    compete_intensity: 0.70
+    requires_residue: true
+
+  - id: MULCHER
+    name: "Mulcher / Shredder"
+    category: residue
+    hp_min: 45
+    hp_max: 70
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.9, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.9, rice: 1.0, cotton: 0.9, soybean: 0.6, maize: 0.8, sugarcane: 1.0, pulses: 0.4, oilseeds: 0.4, horticulture: 0.7}
+    season: [4, 5, 10, 11]
+    maturity: policy_led
+    price_inr: 145000
+    life_years: 10
+    attach_rate_ceiling: 0.09
+    rental_substitutable: 0.55
+    compete_intensity: 0.65
+    requires_residue: true
+
+  - id: ROUND_BALER
+    name: "Round Baler"
+    category: residue
+    hp_min: 50
+    hp_max: 80
+    farm_size_fit: {marginal: 0.0, small: 0.2, semi_medium: 0.5, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 0.2, soybean: 0.3, maize: 0.5, sugarcane: 0.2, pulses: 0.3, oilseeds: 0.3, horticulture: 0.0}
+    season: [4, 5, 10, 11]
+    maturity: policy_led
+    price_inr: 875000
+    life_years: 12
+    attach_rate_ceiling: 0.02
+    rental_substitutable: 0.80    # contractor economics dominate
+    compete_intensity: 0.60
+    requires_residue: true
+
+  - id: HAY_RAKE
+    name: "Hay Rake"
+    category: residue
+    hp_min: 35
+    hp_max: 60
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.9, rice: 0.8, cotton: 0.2, soybean: 0.4, maize: 0.5, sugarcane: 0.2, pulses: 0.4, oilseeds: 0.4, horticulture: 0.0}
+    season: [4, 5, 10, 11]
+    maturity: emerging
+    price_inr: 135000
+    life_years: 12
+    attach_rate_ceiling: 0.03
+    rental_substitutable: 0.70
+    compete_intensity: 0.60
+    requires_residue: true
+
+  # ---------------- Post-harvest ----------------
+  - id: MULTICROP_THRESHER
+    name: "Multi-crop Thresher"
+    category: post_harvest
+    hp_min: 35
+    hp_max: 60
+    farm_size_fit: {marginal: 0.4, small: 0.9, semi_medium: 1.0, medium: 0.9, large: 0.7}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 0.2, soybean: 1.0, maize: 1.0, sugarcane: 0.1, pulses: 1.0, oilseeds: 0.9, horticulture: 0.0}
+    season: [3, 4, 10, 11]
+    maturity: mature
+    price_inr: 128000
+    life_years: 12
+    attach_rate_ceiling: 0.18
+    rental_substitutable: 0.45
+    compete_intensity: 0.88
+
+  - id: CHAFF_CUTTER
+    name: "Chaff Cutter"
+    category: post_harvest
+    hp_min: 20
+    hp_max: 45
+    farm_size_fit: {marginal: 1.0, small: 1.0, semi_medium: 0.8, medium: 0.6, large: 0.4}
+    crop_fit: {wheat: 0.8, rice: 0.7, cotton: 0.2, soybean: 0.4, maize: 1.0, sugarcane: 0.9, pulses: 0.4, oilseeds: 0.4, horticulture: 0.2}
+    season: [1, 2, 3, 4, 11, 12]
+    maturity: mature
+    price_inr: 34000
+    life_years: 10
+    attach_rate_ceiling: 0.30
+    rental_substitutable: 0.10
+    compete_intensity: 0.92
+    dairy_linked: true
+
+  - id: MAIZE_SHELLER
+    name: "Maize Sheller"
+    category: post_harvest
+    hp_min: 25
+    hp_max: 50
+    farm_size_fit: {marginal: 0.5, small: 1.0, semi_medium: 1.0, medium: 0.8, large: 0.6}
+    crop_fit: {wheat: 0.0, rice: 0.0, cotton: 0.0, soybean: 0.1, maize: 1.0, sugarcane: 0.0, pulses: 0.2, oilseeds: 0.1, horticulture: 0.0}
+    season: [10, 11, 12, 3]
+    maturity: mature
+    price_inr: 45000
+    life_years: 10
+    attach_rate_ceiling: 0.08
+    rental_substitutable: 0.35
+    compete_intensity: 0.88
+
+  # ---------------- Haulage ----------------
+  - id: TROLLEY_2W_5T
+    name: "Two Wheel Tipping Trolley 5 T"
+    category: haulage
+    hp_min: 30
+    hp_max: 60
+    farm_size_fit: {marginal: 0.8, small: 1.0, semi_medium: 1.0, medium: 1.0, large: 0.9}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 1.0, soybean: 1.0, maize: 1.0, sugarcane: 1.0, pulses: 1.0, oilseeds: 1.0, horticulture: 1.0}
+    season: [3, 4, 5, 10, 11, 12]
+    maturity: mature
+    price_inr: 165000
+    life_years: 15
+    attach_rate_ceiling: 0.85     # near-universal tractor attachment
+    rental_substitutable: 0.15
+    compete_intensity: 0.95       # dominated by local fabricators
+
+  - id: TROLLEY_4W_8T
+    name: "Four Wheel Trolley 8 T"
+    category: haulage
+    hp_min: 45
+    hp_max: 90
+    farm_size_fit: {marginal: 0.1, small: 0.4, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.9, rice: 0.9, cotton: 0.9, soybean: 0.9, maize: 0.9, sugarcane: 1.0, pulses: 0.8, oilseeds: 0.8, horticulture: 0.9}
+    season: [3, 4, 5, 10, 11, 12]
+    maturity: mature
+    price_inr: 285000
+    life_years: 15
+    attach_rate_ceiling: 0.20
+    rental_substitutable: 0.25
+    compete_intensity: 0.92
+
+  # ---------------- Precision / digital ----------------
+  - id: AGRI_DRONE
+    name: "Agri Spray Drone"
+    category: precision
+    hp_min: 0
+    hp_max: 999
+    self_propelled: true
+    farm_size_fit: {marginal: 0.2, small: 0.5, semi_medium: 0.8, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 0.8, rice: 0.9, cotton: 1.0, soybean: 0.8, maize: 0.7, sugarcane: 0.8, pulses: 0.6, oilseeds: 0.6, horticulture: 0.9}
+    season: [7, 8, 9, 12, 1]
+    maturity: emerging
+    price_inr: 650000
+    life_years: 5
+    attach_rate_ceiling: 0.02
+    rental_substitutable: 0.85     # service/FPO model, not individual ownership
+    compete_intensity: 0.50
+
+  - id: GPS_GUIDANCE_KIT
+    name: "GPS Guidance / Telematics Kit"
+    category: precision
+    hp_min: 45
+    hp_max: 999
+    farm_size_fit: {marginal: 0.0, small: 0.1, semi_medium: 0.4, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.8, cotton: 0.9, soybean: 0.9, maize: 0.9, sugarcane: 0.9, pulses: 0.6, oilseeds: 0.7, horticulture: 0.5}
+    season: [4, 5, 10, 11]
+    maturity: emerging
+    price_inr: 145000
+    life_years: 7
+    attach_rate_ceiling: 0.03
+    rental_substitutable: 0.20
+    compete_intensity: 0.45

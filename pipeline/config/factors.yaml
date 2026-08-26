@@ -1,0 +1,132 @@
+# The 10 factor groups from Wireframe.xlsx sheet "Factors Listings".
+# Each group is a normalised 0-100 index built from named sub-factors.
+# `direction` is the impact sign the Excel asserts -- Phase 5 audits UCM beta signs
+# against this and refuses to use wrong-signed coefficients as weights.
+# `village_evidence` records how much of the index is genuinely village-level vs
+# downscaled from district; surfaced in the UI as a data-confidence badge.
+
+factors:
+  F1:
+    key: farm_economics
+    label: "Farm Economics"
+    excel_impact: "Higher farm income leads to greater investment in mechanization and implements."
+    direction: positive
+    village_evidence: allocated
+    subfactors:
+      - {key: crop_realisation,   label: "Crop realisation (area x yield x price)", weight: 0.35, direction: positive}
+      - {key: mandi_price_index,  label: "Mandi modal price index",                weight: 0.20, direction: positive}
+      - {key: msp_exposure,       label: "MSP-procured crop share",                weight: 0.15, direction: positive}
+      - {key: credit_depth,       label: "KCC / rural credit availability",        weight: 0.20, direction: positive}
+      - {key: input_intensity,    label: "Fertilizer offtake per ha",              weight: 0.10, direction: positive}
+
+  F2:
+    key: land_holding
+    label: "Land Holding Pattern"
+    excel_impact: "Larger farms tend to purchase implements, while smallholders often prefer rental/custom hiring models."
+    direction: positive
+    village_evidence: real          # Census village-level holdings
+    subfactors:
+      - {key: avg_holding_ha,     label: "Average operational holding size", weight: 0.45, direction: positive}
+      - {key: fragmentation,      label: "Fragmentation (parcels per holding)", weight: 0.25, direction: negative}
+      - {key: large_holding_share,label: "Share of medium+large holdings",  weight: 0.30, direction: positive}
+
+  F3:
+    key: tractor_base
+    label: "Tractor Population & Sales"
+    excel_impact: "Implement sales are highly correlated with tractor ownership and utilization."
+    direction: positive
+    village_evidence: allocated
+    top5_rank: 1
+    subfactors:
+      - {key: tractor_density,    label: "Tractors per 1,000 ha net sown", weight: 0.45, direction: positive}
+      - {key: new_sales_trend,    label: "3-yr tractor registration CAGR",  weight: 0.25, direction: positive}
+      - {key: hp_mix_skew,        label: "Share of 45 HP+ tractors",        weight: 0.30, direction: positive}
+
+  F4:
+    key: mechanisation
+    label: "Mechanisation Level"
+    excel_impact: "Regions with labor shortages adopt implements faster to reduce dependency on manual labor."
+    direction: positive
+    village_evidence: allocated
+    top5_rank: 4
+    subfactors:
+      - {key: farm_power_kw_ha,   label: "Farm power availability kW/ha", weight: 0.40, direction: positive}
+      - {key: rural_wage_index,   label: "Rural wage level",              weight: 0.30, direction: positive}
+      - {key: labour_scarcity,    label: "Agri labour scarcity index",    weight: 0.20, direction: positive}
+      - {key: outmigration,       label: "Rural workforce outmigration",  weight: 0.10, direction: positive}
+
+  F5:
+    key: cropping_pattern
+    label: "Cropping Pattern"
+    excel_impact: "Different crops require different implement categories, influencing demand mix."
+    direction: positive
+    village_evidence: allocated
+    top5_rank: 5
+    subfactors:
+      - {key: cropping_intensity, label: "Cropping intensity (GCA/NSA)",  weight: 0.40, direction: positive}
+      - {key: high_value_share,   label: "Horticulture / high-value share", weight: 0.30, direction: positive}
+      - {key: crop_diversity,     label: "Crop-mix entropy",              weight: 0.30, direction: positive}
+
+  F6:
+    key: policy_subsidy
+    label: "Government Policies & Subsidies"
+    excel_impact: "Subsidies can significantly accelerate implement adoption."
+    direction: positive
+    village_evidence: allocated
+    top5_rank: 3
+    subfactors:
+      - {key: smam_intensity,     label: "SMAM / state subsidy intensity", weight: 0.45, direction: positive}
+      - {key: chc_programme,      label: "CHC programme coverage",         weight: 0.30, direction: positive}
+      - {key: fpo_density,        label: "FPO density",                    weight: 0.25, direction: positive}
+
+  F7:
+    key: monsoon_water
+    label: "Monsoon & Agricultural Output"
+    excel_impact: "Good monsoons improve farmer confidence and spending on implements."
+    direction: positive
+    village_evidence: allocated
+    subfactors:
+      - {key: rainfall_departure, label: "Rainfall departure from normal", weight: 0.30, direction: positive}
+      - {key: irrigation_ratio,   label: "Net irrigated area share",       weight: 0.30, direction: positive}
+      - {key: reservoir_status,   label: "Reservoir storage vs normal",    weight: 0.15, direction: positive}
+      - {key: ndvi_anomaly,       label: "NDVI anomaly (crop health)",     weight: 0.25, direction: positive}
+
+  F8:
+    key: custom_hiring
+    label: "Availability of Custom Hiring Services"
+    excel_impact: "In areas with small landholdings, rental models often drive implement utilization more than ownership."
+    direction: dual   # suppresses ownership, raises utilisation-led demand -- modelled as two channels
+    village_evidence: simulated
+    subfactors:
+      - {key: chc_density,        label: "CHC / rental centres per 100 villages", weight: 0.50, direction: dual}
+      - {key: rental_ecosystem,   label: "Tractor rental ecosystem depth",        weight: 0.30, direction: dual}
+      - {key: agri_service_prov,  label: "Agri service provider presence",        weight: 0.20, direction: dual}
+
+  F9:
+    key: technology
+    label: "Technology & Product Innovation"
+    excel_impact: "Clear ROI and productivity benefits enhance adoption."
+    direction: positive
+    village_evidence: allocated
+    subfactors:
+      - {key: precision_adoption, label: "Precision / drone service adoption", weight: 0.40, direction: positive}
+      - {key: progressive_farmer, label: "Progressive farmer proxy (literacy x holding)", weight: 0.35, direction: positive}
+      - {key: digital_access,     label: "Digital / smartphone penetration",   weight: 0.25, direction: positive}
+
+  F10:
+    key: distribution
+    label: "Distribution & Service Network"
+    excel_impact: "Strong dealer networks significantly improve conversion and repeat purchases."
+    direction: positive
+    village_evidence: simulated
+    subfactors:
+      - {key: dealer_accessibility, label: "Distance-decay to nearest dealer", weight: 0.40, direction: positive}
+      - {key: service_density,      label: "Service point density",            weight: 0.25, direction: positive}
+      - {key: spares_index,         label: "Spare parts availability",         weight: 0.20, direction: positive}
+      - {key: demo_activity,        label: "Product demonstration activity",   weight: 0.15, direction: positive}
+
+# Cross-cutting modifiers (not weighted factors -- they multiply the score)
+modifiers:
+  soil_fit:    "Texture/depth/workability -> which tillage class the village physically needs"
+  season_index: "Month-of-year multiplier per implement family (UCM gamma_t overrides prior)"
+  compete: "Competitor headwind from the Compete sheet"

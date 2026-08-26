@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/raw/
+data/curated/
+data/marts/
+data/chat_sessions.json
+web/node_modules/
+web/dist/
+.DS_Store
+
+# secrets -- .env.example (a template with no real values) is intentionally NOT
+# ignored, so a fresh clone has the variable names to fill in.
+.env
+.env.local
+*.pem
+*.key
+
+web/tsconfig.tsbuildinfo

@@ -1,0 +1,16 @@
+# Serving-only dependencies for the API. api/*.py never imports statsmodels,
+# scikit-learn, kmodes or scipy at runtime -- those exist purely to GENERATE
+# data/curated and data/marts (see pipeline/ucm, pipeline/cluster, pipeline/score),
+# not to serve it. requirements.txt (the full set) is still what you install to
+# run the pipeline; this file is what a lightweight deploy image installs instead.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+duckdb>=1.1
+pandas>=2.2
+numpy>=2.0
+pyarrow>=17
+PyYAML>=6.0
+python-dotenv>=1.0
+anthropic>=1.0
+openai>=1.40

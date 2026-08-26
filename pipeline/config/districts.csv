@@ -1,0 +1,115 @@
+state,district,zone,crop_system,mech_tier,irrigation_tier,residue_belt
+Punjab,Amritsar,Majha,rice_wheat,high,high,1
+Punjab,Tarn Taran,Majha,rice_wheat,high,high,1
+Punjab,Gurdaspur,Majha,rice_wheat,high,high,1
+Punjab,Pathankot,Majha,rice_wheat_maize,medium,medium,0
+Punjab,Kapurthala,Doaba,rice_wheat,high,high,1
+Punjab,Jalandhar,Doaba,rice_wheat_potato,high,high,1
+Punjab,Hoshiarpur,Doaba,wheat_maize,medium,medium,0
+Punjab,Shahid Bhagat Singh Nagar,Doaba,wheat_maize,medium,medium,0
+Punjab,Ludhiana,Malwa,rice_wheat,high,high,1
+Punjab,Moga,Malwa,rice_wheat,high,high,1
+Punjab,Firozpur,Malwa,rice_wheat_cotton,high,high,1
+Punjab,Fazilka,Malwa,cotton_wheat,high,high,0
+Punjab,Faridkot,Malwa,rice_wheat_cotton,high,high,1
+Punjab,Sri Muktsar Sahib,Malwa,cotton_wheat,high,high,0
+Punjab,Bathinda,Malwa,cotton_wheat,high,high,0
+Punjab,Mansa,Malwa,cotton_wheat,high,high,0
+Punjab,Barnala,Malwa,rice_wheat,high,high,1
+Punjab,Sangrur,Malwa,rice_wheat,high,high,1
+Punjab,Malerkotla,Malwa,rice_wheat,high,high,1
+Punjab,Patiala,Malwa,rice_wheat,high,high,1
+Punjab,Fatehgarh Sahib,Malwa,rice_wheat,high,high,1
+Punjab,Rupnagar,Malwa,rice_wheat_maize,medium,medium,0
+Punjab,Sahibzada Ajit Singh Nagar,Malwa,rice_wheat,medium,high,1
+Madhya Pradesh,Bhopal,Central Narmada Valley,wheat_soybean,medium,medium,0
+Madhya Pradesh,Sehore,Central Narmada Valley,soybean_wheat,medium,medium,0
+Madhya Pradesh,Raisen,Central Narmada Valley,soybean_wheat,medium,medium,0
+Madhya Pradesh,Vidisha,Central Narmada Valley,soybean_wheat,medium,medium,0
+Madhya Pradesh,Rajgarh,Malwa Plateau,soybean_wheat,medium,medium,0
+Madhya Pradesh,Indore,Malwa Plateau,soybean_wheat,high,medium,0
+Madhya Pradesh,Dewas,Malwa Plateau,soybean_wheat,high,medium,0
+Madhya Pradesh,Dhar,Malwa Plateau,soybean_cotton,medium,medium,0
+Madhya Pradesh,Ujjain,Malwa Plateau,soybean_wheat,high,medium,0
+Madhya Pradesh,Shajapur,Malwa Plateau,soybean_wheat,medium,medium,0
+Madhya Pradesh,Agar Malwa,Malwa Plateau,soybean_wheat,medium,medium,0
+Madhya Pradesh,Ratlam,Malwa Plateau,soybean_wheat,medium,medium,0
+Madhya Pradesh,Mandsaur,Malwa Plateau,soybean_garlic,medium,medium,0
+Madhya Pradesh,Neemuch,Malwa Plateau,soybean_coriander,medium,medium,0
+Madhya Pradesh,Jhabua,Jhabua Hills,maize_cotton,low,low,0
+Madhya Pradesh,Alirajpur,Jhabua Hills,maize_cotton,low,low,0
+Madhya Pradesh,Barwani,Nimar Plains,cotton_soybean,medium,medium,0
+Madhya Pradesh,Khargone,Nimar Plains,cotton_soybean,medium,medium,0
+Madhya Pradesh,Khandwa,Nimar Plains,cotton_soybean,medium,medium,0
+Madhya Pradesh,Burhanpur,Nimar Plains,banana_cotton,medium,high,0
+Madhya Pradesh,Harda,Central Narmada Valley,soybean_wheat,high,high,0
+Madhya Pradesh,Narmadapuram,Central Narmada Valley,soybean_wheat,high,high,0
+Madhya Pradesh,Betul,Satpura Plateau,soybean_wheat,medium,low,0
+Madhya Pradesh,Chhindwara,Satpura Plateau,maize_soybean,medium,low,0
+Madhya Pradesh,Pandhurna,Satpura Plateau,maize_cotton,medium,low,0
+Madhya Pradesh,Seoni,Satpura Plateau,rice_wheat,medium,medium,0
+Madhya Pradesh,Balaghat,Northern Hill Chhattisgarh,rice_wheat,low,medium,0
+Madhya Pradesh,Mandla,Northern Hill Chhattisgarh,rice_pulses,low,low,0
+Madhya Pradesh,Dindori,Northern Hill Chhattisgarh,rice_pulses,low,low,0
+Madhya Pradesh,Jabalpur,Kymore Plateau,rice_wheat,medium,medium,0
+Madhya Pradesh,Katni,Kymore Plateau,rice_wheat,medium,medium,0
+Madhya Pradesh,Narsinghpur,Central Narmada Valley,sugarcane_wheat,high,high,0
+Madhya Pradesh,Damoh,Vindhya Plateau,wheat_pulses,medium,low,0
+Madhya Pradesh,Sagar,Vindhya Plateau,wheat_soybean,medium,medium,0
+Madhya Pradesh,Chhatarpur,Bundelkhand,wheat_pulses,low,low,0
+Madhya Pradesh,Tikamgarh,Bundelkhand,wheat_pulses,low,low,0
+Madhya Pradesh,Niwari,Bundelkhand,wheat_pulses,low,low,0
+Madhya Pradesh,Panna,Bundelkhand,wheat_pulses,low,low,0
+Madhya Pradesh,Satna,Kymore Plateau,wheat_rice,medium,medium,0
+Madhya Pradesh,Maihar,Kymore Plateau,wheat_rice,medium,medium,0
+Madhya Pradesh,Rewa,Kymore Plateau,wheat_rice,medium,medium,0
+Madhya Pradesh,Mauganj,Kymore Plateau,wheat_rice,low,low,0
+Madhya Pradesh,Sidhi,Kymore Plateau,rice_wheat,low,low,0
+Madhya Pradesh,Singrauli,Kymore Plateau,rice_wheat,low,low,0
+Madhya Pradesh,Shahdol,Northern Hill Chhattisgarh,rice_wheat,low,low,0
+Madhya Pradesh,Anuppur,Northern Hill Chhattisgarh,rice_pulses,low,low,0
+Madhya Pradesh,Umaria,Kymore Plateau,rice_wheat,low,low,0
+Madhya Pradesh,Gwalior,Gird Region,wheat_mustard,medium,medium,0
+Madhya Pradesh,Shivpuri,Gird Region,wheat_mustard,medium,medium,0
+Madhya Pradesh,Datia,Gird Region,wheat_pulses,medium,medium,0
+Madhya Pradesh,Bhind,Gird Region,wheat_mustard,medium,high,0
+Madhya Pradesh,Morena,Gird Region,wheat_mustard,medium,high,0
+Madhya Pradesh,Sheopur,Gird Region,soybean_wheat,low,medium,0
+Madhya Pradesh,Guna,Gird Region,soybean_wheat,medium,medium,0
+Madhya Pradesh,Ashoknagar,Gird Region,soybean_wheat,medium,medium,0
+Maharashtra,Ahmednagar,Western Maharashtra Scarcity,sugarcane_onion,high,medium,0
+Maharashtra,Pune,Western Maharashtra Plain,sugarcane_horticulture,high,medium,0
+Maharashtra,Satara,Western Maharashtra Plain,sugarcane_wheat,high,medium,0
+Maharashtra,Sangli,Western Maharashtra Plain,sugarcane_grapes,high,medium,0
+Maharashtra,Kolhapur,Western Maharashtra Plain,sugarcane_rice,high,high,0
+Maharashtra,Solapur,Western Maharashtra Scarcity,sugarcane_jowar,medium,medium,0
+Maharashtra,Nashik,Western Maharashtra Plain,grapes_onion,high,medium,0
+Maharashtra,Dhule,Western Khandesh,cotton_onion,medium,medium,0
+Maharashtra,Nandurbar,Western Khandesh,cotton_maize,low,low,0
+Maharashtra,Jalgaon,Western Khandesh,banana_cotton,high,medium,0
+Maharashtra,Aurangabad,Marathwada,cotton_maize,medium,low,0
+Maharashtra,Jalna,Marathwada,cotton_soybean,medium,low,0
+Maharashtra,Beed,Marathwada,cotton_soybean,medium,low,0
+Maharashtra,Latur,Marathwada,soybean_pulses,medium,low,0
+Maharashtra,Osmanabad,Marathwada,soybean_pulses,medium,low,0
+Maharashtra,Nanded,Marathwada,cotton_soybean,medium,low,0
+Maharashtra,Parbhani,Marathwada,cotton_soybean,medium,low,0
+Maharashtra,Hingoli,Marathwada,cotton_soybean,medium,low,0
+Maharashtra,Buldhana,Vidarbha West,cotton_soybean,medium,low,0
+Maharashtra,Akola,Vidarbha West,cotton_soybean,medium,low,0
+Maharashtra,Washim,Vidarbha West,cotton_soybean,medium,low,0
+Maharashtra,Amravati,Vidarbha West,cotton_soybean,medium,low,0
+Maharashtra,Yavatmal,Vidarbha West,cotton_soybean,medium,low,0
+Maharashtra,Wardha,Vidarbha East,cotton_soybean,medium,low,0
+Maharashtra,Nagpur,Vidarbha East,cotton_orange,medium,medium,0
+Maharashtra,Bhandara,Vidarbha East,rice_pulses,low,medium,0
+Maharashtra,Gondia,Vidarbha East,rice_pulses,low,medium,0
+Maharashtra,Chandrapur,Vidarbha East,rice_cotton,low,medium,0
+Maharashtra,Gadchiroli,Vidarbha East,rice_pulses,low,low,0
+Maharashtra,Thane,Konkan,rice_horticulture,low,medium,0
+Maharashtra,Palghar,Konkan,rice_horticulture,low,medium,0
+Maharashtra,Raigad,Konkan,rice_horticulture,low,medium,0
+Maharashtra,Ratnagiri,Konkan,mango_rice,low,low,0
+Maharashtra,Sindhudurg,Konkan,mango_cashew,low,low,0
+Maharashtra,Mumbai City,Konkan,urban,low,low,0
+Maharashtra,Mumbai Suburban,Konkan,urban,low,low,0

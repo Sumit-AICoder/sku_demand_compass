@@ -1,0 +1,188 @@
+# Every simulated layer declares its parameters here so the assumptions are auditable
+# and can be surfaced in the UI. Nothing in the simulate/ package may hard-code a
+# magic number that is not reflected in this file.
+
+seed: 20260822
+
+# --------------------------------------------------------------- market calibration
+market:
+  # Indicative Indian farm-implement market size used to scale absolute unit volumes.
+  # This is the anchor that turns relative propensity into plausible unit counts.
+  india_implement_market_inr_cr: 12500
+  pilot_states_share: 0.29          # PB+MP+MH share of national implement demand
+  sonalika_implement_share: 0.062   # plausible Sonalika share of the implement market
+  months_history: 60
+
+# --------------------------------------------------------------- tractor base
+tractor_base:
+  # Tractors per 1,000 ha net sown area, by mechanisation tier. Punjab sits far above
+  # the national average; MP/MH low-tier districts far below.
+  density_per_1000ha: {high: 78.0, medium: 31.0, low: 12.0}
+  density_cv: 0.22
+  # HP mix shifts upward with mechanisation tier -- this gates which SKUs are addressable.
+  hp_mix:
+    high:   {"20_35": 0.10, "35_45": 0.26, "45_60": 0.44, "60_plus": 0.20}
+    medium: {"20_35": 0.22, "35_45": 0.38, "45_60": 0.32, "60_plus": 0.08}
+    low:    {"20_35": 0.40, "35_45": 0.40, "45_60": 0.17, "60_plus": 0.03}
+  # Age distribution drives the replacement echo.
+  mean_age_years: 7.5
+  age_sigma: 0.55
+  registration_cagr: {high: 0.041, medium: 0.055, low: 0.068}
+
+# --------------------------------------------------------------- dealer network
+dealer_network:
+  # Dealers placed by market-town gravity: probability of a dealer in a block scales
+  # with block population and mechanisation tier.
+  dealers_per_100k_rural_pop: {high: 3.1, medium: 2.0, low: 1.1}
+  service_point_multiplier: 1.9         # service points per dealer
+  distance_decay_km: 18.0               # accessibility half-life
+  max_effective_km: 65.0
+  spares_index_beta: {high: 0.82, medium: 0.61, low: 0.38}
+  demo_activity_beta: {high: 0.7, medium: 0.45, low: 0.22}
+
+# --------------------------------------------------------------- competition
+# Shaped by the qualitative positioning in the "Compete" sheet of Wireframe.xlsx.
+competition:
+  base_intensity: 0.72
+  # Category-level share held by entrenched specialists (the headwind Sonalika faces).
+  category_incumbency:
+    tillage: 0.80          # Shaktiman/Fieldking rotavator equity
+    sowing: 0.62
+    crop_protection: 0.58  # MITRA/Mahindra in orchard sprayers
+    irrigation: 0.55
+    harvesting: 0.70       # Shaktiman/CLAAS/New Holland
+    residue: 0.66
+    post_harvest: 0.74     # highly fragmented regional fabricators
+    haulage: 0.88          # local fabricators dominate trolleys
+    precision: 0.52        # John Deere/Maschio/IoTech, but category is young
+  # State-level player strength multipliers, from the Compete sheet's GTM notes.
+  state_bias:
+    Punjab:         {Landforce: 1.35, Shaktiman: 1.15, Fieldking: 1.20, Sonalika: 1.25}
+    Madhya Pradesh: {Shaktiman: 1.10, Fieldking: 1.05, Mahindra: 1.15, Sonalika: 1.00}
+    Maharashtra:    {Mahindra: 1.25, Maschio: 1.15, KhedutAgro: 1.20, Sonalika: 0.90}
+  players: [Sonalika, Mahindra, Shaktiman, Fieldking, JohnDeere, TAFE, EscortsKubota,
+            Landforce, Maschio, KhedutAgro, NewHolland, VST, Local]
+
+  # Price position relative to the category average (1.0 = at market). Read off the
+  # Compete sheet's positioning: premium European and precision players sit above,
+  # local fabricators well below.
+  price_index:
+    Sonalika: 0.94
+    Mahindra: 1.06
+    Shaktiman: 1.02
+    Fieldking: 0.93
+    JohnDeere: 1.38
+    TAFE: 0.99
+    EscortsKubota: 1.04
+    Landforce: 0.91
+    Maschio: 1.32
+    KhedutAgro: 0.88
+    NewHolland: 1.22
+    VST: 0.97
+    Local: 0.72
+  # How far a buyer will travel for each brand before switching, in km. A strong
+  # dealer network is worth more than a price advantage in this market, which is the
+  # Excel's "strong dealer networks significantly improve conversion" made numeric.
+  reach_km:
+    Sonalika: 26
+    Mahindra: 34
+    Shaktiman: 30
+    Fieldking: 28
+    JohnDeere: 40
+    TAFE: 32
+    EscortsKubota: 30
+    Landforce: 22
+    Maschio: 36
+    KhedutAgro: 20
+    NewHolland: 34
+    VST: 24
+    Local: 9      # bought from the nearest fabricator, nothing more
+
+# --------------------------------------------------------------- cannibalisation
+cannibalisation:
+  # How sensitive share is to price and distance. Multinomial-logit style: utility is
+  # linear, share is its softmax, so a change in one brand necessarily moves the others
+  # -- which is the whole point of modelling switching rather than share in isolation.
+  price_sensitivity: -2.4        # utility per unit of relative price
+  distance_sensitivity: -0.055   # utility per km beyond the brand's reach
+  fit_weight: 1.9                # utility per unit of category fit
+  brand_weight: 1.1              # utility per unit of established equity
+
+  # Internal overlap: two Sonalika SKUs compete when they suit the same tractor, the
+  # same farm and the same job. Above this overlap a sale of one is partly taken from
+  # the other rather than being incremental.
+  internal_overlap_threshold: 0.55
+  internal_capture_rate: 0.45    # share of overlapping demand that is displaced, not added
+
+# --------------------------------------------------------------- custom hiring
+custom_hiring:
+  # CHCs suppress ownership but raise utilisation-led demand -- two channels, not one.
+  chc_per_100_villages: {high: 4.2, medium: 2.6, low: 1.3}
+  ownership_suppression: 0.45   # fraction of rental_substitutable demand CHCs absorb
+  utilisation_uplift: 0.30      # CHC purchases as a share of suppressed ownership demand
+  small_holding_amplifier: 1.6  # rental preference rises as holding size falls
+
+# --------------------------------------------------------------- finance
+finance:
+  kcc_penetration: {high: 0.72, medium: 0.48, low: 0.27}
+  approval_rate_base: 0.61
+  approval_rate_credit_beta: 0.34    # sensitivity to credit depth index
+  affordability_months_income: 9.0   # implement ticket affordable at ~9 months farm income
+  subvention_effect: 0.08
+
+# --------------------------------------------------------------- sales history DGP
+# The latent demand process used to generate the 60-month village x SKU panel.
+# The UCM parameter-recovery test (Verification #4) checks that the estimator can
+# recover the betas listed here from the generated series.
+sales_dgp:
+  trend_drift_annual: 0.045
+  trend_noise: 0.010
+  cycle_period_months: 46
+  cycle_amplitude: 0.075
+  irregular_sigma: 0.11
+  # TRUE elasticities injected into the simulated tractor series. The recovery test
+  # asserts the fitted betas land inside their own confidence intervals around these.
+  true_betas:
+    rainfall_departure:  0.180
+    reservoir_status:    0.060
+    ndvi_anomaly:        0.090
+    mandi_price_index:   0.145
+    msp_change:          0.070
+    credit_depth:        0.210
+    subsidy_intensity:   0.160
+    rural_wage_index:    0.085
+    diesel_price:       -0.120
+    fertilizer_offtake:  0.055
+    pmfby_claims:        0.040
+  interventions:
+    demonetisation: {month: "2016-11", effect: -0.22, decay_months: 4}
+    covid_lockdown: {month: "2020-04", effect: -0.38, decay_months: 3}
+    covid_rebound:  {month: "2020-09", effect:  0.18, decay_months: 6}
+  festive_months: [9, 10, 11]        # Navratri/Dussehra/Diwali buying window
+  festive_effect: 0.12
+
+# --------------------------------------------------------------- soil
+soil:
+  # Texture distribution by agro-climatic zone drives the workability index and the
+  # soil_affinity gating on deep-tillage SKUs.
+  texture_by_zone:
+    default:                    {sandy: 0.25, loam: 0.45, clay: 0.30}
+    Malwa:                      {sandy: 0.30, loam: 0.50, clay: 0.20}
+    Majha:                      {sandy: 0.22, loam: 0.56, clay: 0.22}
+    Doaba:                      {sandy: 0.28, loam: 0.54, clay: 0.18}
+    Malwa Plateau:              {sandy: 0.12, loam: 0.34, clay: 0.54}   # black cotton
+    Nimar Plains:               {sandy: 0.10, loam: 0.32, clay: 0.58}
+    Central Narmada Valley:     {sandy: 0.10, loam: 0.30, clay: 0.60}
+    Vidarbha West:              {sandy: 0.12, loam: 0.30, clay: 0.58}
+    Vidarbha East:              {sandy: 0.20, loam: 0.38, clay: 0.42}
+    Marathwada:                 {sandy: 0.15, loam: 0.35, clay: 0.50}
+    Western Maharashtra Plain:  {sandy: 0.18, loam: 0.44, clay: 0.38}
+    Konkan:                     {sandy: 0.42, loam: 0.38, clay: 0.20}   # lateritic
+    Bundelkhand:                {sandy: 0.30, loam: 0.34, clay: 0.36}
+    Jhabua Hills:               {sandy: 0.45, loam: 0.35, clay: 0.20}
+  # Maps texture -> the hard/medium/soft classes used by sku.soil_affinity
+  hardness_from_texture: {clay: hard, loam: medium, sandy: soft}
+  ph_mean: 7.4
+  ph_sigma: 0.55
+  oc_pct_mean: {high: 0.58, medium: 0.48, low: 0.41}
+  depth_cm_by_zone_default: 90

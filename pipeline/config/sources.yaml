@@ -1,0 +1,229 @@
+# Source registry. Every ingest module resolves its source here.
+#
+# access:
+#   open_api    - documented JSON/CSV endpoint, fetched directly
+#   keyed_api   - works but needs a data.gov.in API key in env DATA_GOV_KEY
+#   scrape      - HTML/session/CSRF gated; connector implemented but brittle
+#   gated       - reachable but not machine-readable without a session we cannot script
+#                 (JSF ViewState, captcha, or interactive-only dashboards)
+#
+# Every connector implements fetch_real() and synthesize(). The runner tries fetch_real()
+# and falls back to synthesize(), recording which path ran in the fetch manifest.
+# provenance propagates all the way to the UI badge: real | allocated | simulated.
+
+defaults:
+  cache_dir: data/raw
+  timeout_s: 45
+  retries: 2
+  user_agent: "Mozilla/5.0 (compatible; sonalika-propensity/0.1; research)"
+
+pilot_states:
+  - {name: Punjab,         lgd_code: "03", census_code: "03", archetype: North}
+  - {name: Madhya Pradesh, lgd_code: "23", census_code: "23", archetype: Central}
+  - {name: Maharashtra,    lgd_code: "27", census_code: "27", archetype: West}
+
+sources:
+
+  lgd_village_directory:
+    label: "LGD village / sub-district / district master"
+    url: "https://lgdirectory.gov.in/globalviewvillage.do"
+    access: scrape
+    verified_reachable: true
+    granularity: village
+    provenance_if_real: real
+    provenance_if_sim: simulated
+    notes: >
+      Session + OWASP_CSRFTOKEN gated; no REST endpoint. Real district names and LGD
+      state/district codes ARE encoded in geo_reference.yaml and are used regardless;
+      only the sub-district and village rows below district level are synthesised when
+      the scrape fails. Village COUNTS per state are anchored to published Census 2011
+      totals so the synthetic spine is the right size.
+
+  census_village_amenities:
+    label: "Census 2011 village directory & amenities"
+    url: "https://censusindia.gov.in/census.website/data/census-tables"
+    access: gated
+    granularity: village
+    fields: [population, households, literacy, area_ha, irrigated_area]
+    provenance_if_sim: simulated
+
+  upag_apy:
+    label: "UPAg area / production / yield"
+    url: "https://upag.gov.in/api/dashboard/production"
+    access: scrape
+    verified_reachable: true
+    granularity: district
+    downscale: cropped_area_share
+    provenance_if_sim: allocated
+
+  upag_sown_area:
+    label: "UPAg weekly sown area vs normal"
+    url: "https://upag.gov.in/api/dashboard/sownArea"
+    access: scrape
+    granularity: state
+    provenance_if_sim: allocated
+
+  upag_irrigation:
+    label: "UPAg irrigated area and source of irrigation"
+    url: "https://upag.gov.in/"
+    access: scrape
+    granularity: district
+    downscale: net_sown_area_share
+    provenance_if_sim: allocated
+
+  ag_census_holdings:
+    label: "Agricultural Census operational holdings by size class"
+    url: "https://agcensus.dacnet.nic.in/"
+    access: scrape
+    granularity: district
+    fields: [marginal, small, semi_medium, medium, large]
+    provenance_if_sim: allocated
+    notes: "Drives farm_size_fit gating and the F2 land-holding index."
+
+  imd_rainfall:
+    label: "IMD district rainfall actual / normal / departure"
+    url: "https://mausam.imd.gov.in/responsive/rainfallinformation.php"
+    access: scrape
+    granularity: district
+    frequency: weekly
+    downscale: uniform_with_terrain_modifier
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  soil_health_card:
+    label: "Soil Health Card nutrient levels"
+    url: "https://soilhealth.dac.gov.in/NutrientMapModelVillages"
+    access: scrape
+    verified_reachable: true
+    granularity: village
+    fields: [n, p, k, oc, ph, ec, s, zn, fe, cu, mn, b]
+    provenance_if_real: real
+    provenance_if_sim: simulated
+    notes: "One of the very few genuinely village-level public sources."
+
+  slusi_soil:
+    label: "SLUSI soil texture / depth / erosion / land capability"
+    url: "https://soilhealth.dac.gov.in/slusi-visualisation/"
+    access: scrape
+    verified_reachable: true
+    granularity: polygon
+    fields: [texture, depth_cm, erosion_class, lcc, slope]
+    provenance_if_sim: simulated
+    notes: "Feeds the soil workability index and soil_affinity gating for deep-tillage SKUs."
+
+  krishi_dss_ndvi:
+    label: "KrishiDSS / VEDAS NDVI, EVI, crop stress"
+    url: "https://vedas.sac.gov.in/vapps/krishi_dss/dashboard/index.html"
+    access: gated
+    verified_reachable: true
+    granularity: grid
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  agmarknet_prices:
+    label: "Agmarknet mandi arrivals and modal prices"
+    url: "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
+    access: keyed_api
+    env_key: DATA_GOV_KEY
+    granularity: mandi
+    provenance_if_sim: allocated
+    ucm_regressor: true
+    notes: "Public demo key is rate-limited (429). Set DATA_GOV_KEY for the real feed."
+
+  msp_series:
+    label: "Minimum Support Prices by crop and year"
+    url: "https://upag.gov.in/"
+    access: scrape
+    granularity: national
+    provenance_if_sim: allocated
+    ucm_regressor: true
+    notes: "National series; small table, safe to hard-code from published CACP releases."
+
+  cwc_reservoir:
+    label: "CWC reservoir storage vs normal"
+    url: "https://ffs.india-water.gov.in/"
+    access: scrape
+    granularity: reservoir
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  pmfby_claims:
+    label: "PMFBY farmers insured, area insured, claims paid"
+    url: "https://pmfby.gov.in/"
+    access: scrape
+    granularity: district
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  vahan_tractor_registrations:
+    label: "Vahan monthly tractor registrations by RTO"
+    url: "https://vahan.parivahan.gov.in/vahan4dashboard/"
+    access: gated
+    verified_reachable: true
+    granularity: rto
+    frequency: monthly
+    provenance_if_real: real
+    provenance_if_sim: simulated
+    ucm_target: true
+    critical: true
+    notes: >
+      THE UCM dependent variable and the single most important input. The dashboard is a
+      JSF app driven by ViewState postbacks with no stable REST surface, so the connector
+      falls back to a calibrated synthetic monthly panel whose state-level totals and
+      seasonal shape match published Indian tractor industry volumes. When it is synthetic,
+      the UCM section of the dashboard is labelled accordingly and the parameter-recovery
+      test (Verification #4) is the check that actually matters.
+
+  rbi_kcc_credit:
+    label: "RBI / NABARD KCC accounts and rural credit disbursement"
+    url: "https://dbie.rbi.org.in/"
+    access: gated
+    granularity: district
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  smam_subsidy:
+    label: "SMAM farm mechanisation subsidy releases"
+    url: "https://agrimachinery.nic.in/"
+    access: scrape
+    granularity: state
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  rural_wages:
+    label: "Labour Bureau rural agricultural wage index"
+    url: "https://labourbureau.gov.in/"
+    access: scrape
+    granularity: state
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  diesel_price:
+    label: "PPAC retail diesel price"
+    url: "https://ppac.gov.in/"
+    access: scrape
+    granularity: state
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+  fertilizer_offtake:
+    label: "UPAg fertilizer requirement, availability and sales"
+    url: "https://upag.gov.in/"
+    access: scrape
+    granularity: district
+    provenance_if_sim: allocated
+    ucm_regressor: true
+
+# Layers that have no public source at all and are simulation by design (Phase 3).
+simulated_by_design:
+  sonalika_sku_sales:
+    reason: "No OEM implement dispatch or dealer secondary-sales data is public."
+    calibrated_to: "Published Indian farm-implement market size and plausible Sonalika share."
+  dealer_network:
+    reason: "Dealer master is commercial; placed by population/market-town gravity."
+  competitor_share:
+    reason: "Derived from the qualitative positioning in the Compete sheet of Wireframe.xlsx."
+  chc_density:
+    reason: "CHC registry is partial; modelled from holding size and state programme intensity."
+  finance_penetration:
+    reason: "Lender-level approval data is private; modelled from credit depth and holding size."
