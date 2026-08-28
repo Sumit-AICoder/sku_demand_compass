@@ -3,9 +3,15 @@ import type { Level } from './api'
 
 export interface Crumb { level: Level; id: string; name: string }
 
+export type ProductLine = 'implements' | 'tractors'
+
 interface State {
   view: string
   setView: (v: string) => void
+
+  // which product line the whole tool is scoped to (client wants both)
+  productLine: ProductLine
+  setProductLine: (p: ProductLine) => void
 
   // geography drill path
   crumbs: Crumb[]
@@ -26,8 +32,11 @@ interface State {
 }
 
 export const useStore = create<State>((set, get) => ({
-  view: 'overview',
+  view: 'executive',
   setView: (v) => set({ view: v }),
+
+  productLine: 'implements',
+  setProductLine: (p) => set({ productLine: p }),
 
   crumbs: [],
   push: (c) => set({ crumbs: [...get().crumbs, c] }),

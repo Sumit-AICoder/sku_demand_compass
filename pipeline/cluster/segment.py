@@ -29,6 +29,15 @@ LOG = log("cluster")
 
 # The features that should actually define an archetype: how the village farms, what
 # it farms on, how mechanised it already is, and how well it is served.
+# Real agro-climatic features (district level, from the agroclimate mart) now co-define
+# an archetype alongside the village features -- this is the client's primary micro-market
+# axis (agro-climatic zone) made real: temperature, rainfall regime and crop-mix.
+REAL_AGRO = [
+    "mean_temp", "temp_seasonality", "rain_normal_mm",
+    "crop_wheat_share", "crop_rice_share", "crop_cotton_share",
+    "crop_soybean_share", "crop_sugarcane_share",
+]
+
 NUMERIC = [
     "avg_holding_ha", "small_marginal_share", "holding_gini",
     "irrigation_reliability", "cropping_intensity", "crop_entropy", "high_value_share",
@@ -36,11 +45,13 @@ NUMERIC = [
     "residue_burden_per_ha", "workability", "draft_requirement",
     "income_per_ha", "credit_depth", "dealer_accessibility", "chc_density",
     "rainfall_volatility", "drought_frequency", "peer_attach_rate",
-]
+] + REAL_AGRO
 CATEGORICAL = ["dominant_crop", "soil_texture", "irrigation_class", "state"]
 
-K_RANGE = range(5, 13)
-K_BUSINESS = (6, 10)
+# The client asks for ~15 archetypes; select in that neighbourhood rather than the
+# earlier 6-10 (which pre-dated the real agro-climatic axis).
+K_RANGE = range(11, 19)
+K_BUSINESS = (14, 16)
 FIT_SAMPLE = 12_000          # fit on a sample, assign the full 105k
 BOOTSTRAP_N = 8
 
@@ -79,6 +90,16 @@ def _select_k(Xn: np.ndarray, rng) -> pd.DataFrame:
 def build(seed: int = 20260822) -> pd.DataFrame:
     rng = np.random.default_rng(seed + 51)
     f = read_table(MARTS / "village_features.parquet")
+
+    # Bring the real agro-climate onto every village via its district, then fill the few
+    # unmatched districts with the column median so the clustering never sees a NaN.
+    ac = read_table(MARTS / "agroclimate.parquet")[["district_id"] + REAL_AGRO + ["top_crops"]]
+    f = f.merge(ac, on="district_id", how="left").rename(columns={"top_crops": "district_top_crops"})
+    for c in REAL_AGRO:
+        f[c] = pd.to_numeric(f[c], errors="coerce").fillna(f[c].median())
+    LOG.info("merged real agro-climate onto villages (%d features): %s",
+             len(REAL_AGRO), ", ".join(REAL_AGRO))
+
     df, Xn, Xc = _prepare(f)
 
     # ---- choose k -----------------------------------------------------------
@@ -121,7 +142,7 @@ def build(seed: int = 20260822) -> pd.DataFrame:
 
     out = df[["village_id", "district_id", "state", "cluster", "cluster_spatial"]].copy()
     out["archetype"] = out["cluster_spatial"].map(profiles.set_index("cluster")["archetype"])
-    out["provenance"] = "simulated"
+    out["provenance"] = "allocated"   # blends real district agro-climate with village features
     write_table(out, MARTS / "village_clusters.parquet")
     write_table(profiles, MARTS / "cluster_profiles.parquet")
     return out
@@ -221,6 +242,20 @@ def _bootstrap_stability(Xn: np.ndarray, k: int, seed: int) -> float:
 
 
 ARCHETYPE_RULES = [
+    # Agro-climate-led names first -- these read off the real temperature/rainfall/crop
+    # axis and are the ones a client recognises as a micro-market.
+    ("Wheat-Paddy Northern Plains",
+     lambda p: p["crop_wheat_share"] > .4 and p["crop_rice_share"] > .4),
+    ("High-Rainfall Konkan Rice",
+     lambda p: p["rain_normal_mm"] > .9 and p["crop_rice_share"] > .1),
+    ("Cotton-Soybean Dryland Belt",
+     lambda p: p["crop_cotton_share"] > .5 or p["crop_soybean_share"] > .6),
+    ("Wheat-Gram Malwa Plateau",
+     lambda p: p["crop_wheat_share"] > .4 and p["rain_normal_mm"] < .2),
+    ("Sugarcane Irrigated Tract",
+     lambda p: p["crop_sugarcane_share"] > .5),
+    ("Hot Semi-Arid Low-Rainfall",
+     lambda p: p["mean_temp"] > .5 and p["rain_normal_mm"] < -.3),
     # (name, predicate over the cluster's z-scored profile)
     ("High-Mech Irrigated Wheat-Paddy",
      lambda p: p["farm_power_kw_ha"] > .6 and p["irrigation_reliability"] > .4),
@@ -241,6 +276,63 @@ ARCHETYPE_RULES = [
 ]
 
 
+CROP_LABEL = {
+    "crop_wheat_share": "Wheat", "crop_rice_share": "Rice", "crop_cotton_share": "Cotton",
+    "crop_soybean_share": "Soybean", "crop_sugarcane_share": "Sugarcane",
+    "crop_maize_share": "Maize",
+}
+
+
+def _archetype_name(g: pd.DataFrame, zp: pd.Series) -> str:
+    """Build an archetype name from the cluster's DISTINCTIVE crops plus one standout trait.
+
+    Crops are chosen by z-score (how unusually high this cluster's share is), not raw
+    share -- DES is foodgrain-weighted, so wheat/rice dominate every absolute mix and
+    would drown out the cotton / soybean / sugarcane signal that actually separates
+    archetypes. A cluster merely average in everything falls back to its raw top crop.
+    """
+    crop_z = sorted(((lbl, float(zp.get(col, 0.0))) for col, lbl in CROP_LABEL.items()
+                     if col in zp.index), key=lambda x: -x[1])
+    top = [lbl for lbl, z in crop_z if z > 0.35][:2]
+    if not top:                                # nothing distinctive -> raw dominant crop
+        raw = sorted(((lbl, float(g[col].mean())) for col, lbl in CROP_LABEL.items()
+                      if col in g.columns), key=lambda x: -x[1])
+        top = [raw[0][0]] if raw and raw[0][1] > 0.08 else []
+    crops = "-".join(top) if top else "Mixed-Crop"
+    rain = float(g["rain_normal_mm"].mean()) if "rain_normal_mm" in g else 0.0
+    if rain > 1100:
+        desc = "High-Rainfall"
+    elif zp.get("irrigation_reliability", 0) > .5:
+        desc = "Irrigated"
+    elif zp.get("residue_burden_per_ha", 0) > .7:
+        desc = "Residue Belt"
+    elif zp.get("farm_power_kw_ha", 0) > .5:
+        desc = "High-Mech"
+    elif zp.get("farm_power_kw_ha", 0) < -.5 or rain < 500:
+        desc = "Dryland"
+    elif zp.get("high_value_share", 0) > .6:
+        desc = "High-Value"
+    elif zp.get("small_marginal_share", 0) > .5:
+        desc = "Smallholder"
+    else:
+        desc = "Plains"
+    return f"{crops} {desc}"
+
+
+def _cluster_top_crops(g: pd.DataFrame) -> str:
+    """Most common real crops across the cluster's districts (full DES crop list)."""
+    from collections import Counter
+    if "district_top_crops" not in g.columns:
+        return "mixed"
+    toks: Counter = Counter()
+    for s in g["district_top_crops"].dropna():
+        for t in str(s).split(","):
+            t = t.strip()
+            if t:
+                toks[t] += 1
+    return ", ".join(c for c, _ in toks.most_common(3)) or "mixed"
+
+
 def _profile(df: pd.DataFrame, k: int, method: str, ari: float, coherence: float) -> pd.DataFrame:
     """Auto-generate an archetype card per cluster: what defines it, and what it buys."""
     z = (df[NUMERIC] - df[NUMERIC].mean()) / df[NUMERIC].std(ddof=0)
@@ -250,10 +342,16 @@ def _profile(df: pd.DataFrame, k: int, method: str, ari: float, coherence: float
     used, rows = set(), []
     for c in prof.index:
         p = prof.loc[c]
-        name = next((n for n, rule in ARCHETYPE_RULES
-                     if n not in used and _safe(rule, p)), None)
-        if name is None:
-            name = f"Mixed Farming Cluster {c + 1}"
+        g = df[df["cluster_spatial"] == c]
+        # Name from the cluster's REAL crop-mix + one standout structural trait, so a
+        # label can never contradict the agronomy (no "Soybean Belt" over Punjab).
+        base = _archetype_name(g, p)
+        name = base
+        if name in used:                       # disambiguate by dominant state, then count
+            name = f"{base} · {g['state'].value_counts().index[0]}"
+        n = 2
+        while name in used:
+            name, n = f"{base} {n}", n + 1
         used.add(name)
 
         top = p.reindex(p.abs().sort_values(ascending=False).index)[:5]
@@ -264,7 +362,7 @@ def _profile(df: pd.DataFrame, k: int, method: str, ari: float, coherence: float
             "n_villages": int(len(g)),
             "share_pct": round(100.0 * len(g) / len(df), 1),
             "states": ", ".join(g["state"].value_counts().head(3).index),
-            "top_crops": ", ".join(g["dominant_crop"].value_counts().head(3).index),
+            "top_crops": _cluster_top_crops(g),
             "defining_features": "; ".join(f"{i} {v:+.2f}sd" for i, v in top.items()),
             "avg_holding_ha": round(float(g["avg_holding_ha"].mean()), 2),
             "tractor_density": round(float(g["tractor_density"].mean()), 1),
@@ -275,7 +373,7 @@ def _profile(df: pd.DataFrame, k: int, method: str, ari: float, coherence: float
             "method": method,
             "bootstrap_ari": round(ari, 3),
             "spatial_coherence": round(coherence, 3),
-            "provenance": "simulated",
+            "provenance": "allocated",
         })
     out = pd.DataFrame(rows)
     LOG.info("archetypes:\n%s", out[["cluster", "archetype", "n_villages", "share_pct",

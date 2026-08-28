@@ -17,8 +17,13 @@ from pipeline.common import CURATED, Manifest, read_table, log
 
 LOG = log("run")
 
-STAGES = ["geo", "ingest", "assets", "competition", "sku", "features",
-          "ucm", "cluster", "factors", "score", "export", "insights", "shapes", "compete"]
+# micromarkets reads village_totals (export) + competitive_landscape (compete) + agroclimate,
+# and rewrites the segmentation that insights consumes -- so it runs after compete, before
+# insights. Demand scoring does not need the new labels (they are display-only).
+STAGES = ["geo", "ingest", "assets", "competition", "sku", "features", "agroclimate",
+          "ucm", "cluster", "factors", "score", "export", "compete", "micromarkets",
+          "operations", "archetype_sales", "archetype_ucm", "insights", "shapes",
+          "dealers", "subsidy"]
 
 
 def _spine():
@@ -70,6 +75,30 @@ def stage_cluster():
     segment.build()
 
 
+def stage_micromarkets():
+    """Micro-market layer + base-segment x HP-belt archetypes; rewrites the segmentation."""
+    from pipeline.cluster import micromarkets
+    micromarkets.build()
+
+
+def stage_operations():
+    """Modelled operational metrics per micro-market + product/sales-issue diagnosis."""
+    from pipeline.simulate import operations
+    operations.build()
+
+
+def stage_archetype_sales():
+    """Simulated daily sales history per archetype -- input panel for the archetype UCM."""
+    from pipeline.simulate import archetype_sales
+    archetype_sales.build()
+
+
+def stage_archetype_ucm():
+    """Per-archetype UCM: baseline trend+seasonal vs weather/holiday/promo/price/competitor uplift."""
+    from pipeline.ucm import archetype_model
+    archetype_model.fit_all()
+
+
 def stage_factors():
     from pipeline.score import factors
     factors.build()
@@ -95,6 +124,24 @@ def stage_shapes():
     """Simplified map geometry per zoom level for the drill-down map."""
     from pipeline.export import shapes
     shapes.build()
+
+
+def stage_dealers():
+    """Real dealer-network coverage (own vs competitor) from the ITL/EY dealer databases."""
+    from pipeline.ingest import dealers
+    dealers.build()
+
+
+def stage_agroclimate():
+    """Real agro-climatic district profile (temperature, rainfall, crop-mix)."""
+    from pipeline.ingest import agroclimate
+    agroclimate.build()
+
+
+def stage_subsidy():
+    """Real equipment-subsidy rates by state (PB/MH real, MP via SMAM proxy)."""
+    from pipeline.ingest import subsidy
+    subsidy.build()
 
 
 def stage_insights():

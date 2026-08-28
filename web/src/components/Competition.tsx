@@ -118,37 +118,56 @@ export default function Competition() {
 
       <div className="split">
         <Card title={`Head to head — Sonalika vs ${rival}`}
-              note="where they cost us most, and where they are beatable">
-          <Async state={h2h}>{(d: any) => (
-            <>
-              <ResponsiveContainer width="100%" height={230}>
-                <BarChart data={d.by_category} margin={{ left: -14, right: 10 }}>
-                  <CartesianGrid stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="category" tick={{ fontSize: 9 }} angle={-20} textAnchor="end" height={54} />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip formatter={(v: any) => fmt.units(v)} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <RBar dataKey="theirs" name={`${rival} volume`} fill="var(--c5)" radius={[3, 3, 0, 0]} />
-                  <RBar dataKey="winnable" name="Winnable by us" fill="var(--good)" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="tbl-wrap" style={{ maxHeight: 180 }}>
-                <table>
-                  <thead><tr><th>District</th><th>State</th>
-                    <th className="n">They hold</th><th className="n">Winnable</th></tr></thead>
-                  <tbody>
-                    {d.top_districts.map((r: any) => (
-                      <tr key={r.district + r.state}>
-                        <td>{r.district}</td><td className="muted">{r.state}</td>
-                        <td className="n">{fmt.units(r.theirs)}</td>
-                        <td className="n pos">{fmt.units(r.winnable)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}</Async>
+              note="of each category’s rival volume, the green slice is winnable by us">
+          <Async state={h2h}>{(d: any) => {
+            const data = [...d.by_category]
+              .map((c: any) => ({
+                ...c,
+                out_of_reach: Math.max(0, c.theirs - c.winnable),
+                winnable_pct: c.theirs > 0 ? (c.winnable / c.theirs) * 100 : 0,
+              }))
+              .sort((a: any, b: any) => b.winnable - a.winnable)
+            return (
+              <>
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={data} layout="vertical" margin={{ left: 8, right: 24 }}>
+                    <CartesianGrid stroke="var(--border)" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={(v: any) => fmt.units(v)} />
+                    <YAxis type="category" dataKey="category" width={128} tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={(v: any, n: any, p: any) =>
+                      n === 'Winnable by us'
+                        ? `${fmt.units(v)} (${p.payload.winnable_pct.toFixed(0)}% of their volume)`
+                        : fmt.units(v)} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    <RBar dataKey="winnable" name="Winnable by us" stackId="a"
+                          fill="var(--good)" radius={[3, 0, 0, 3]} />
+                    <RBar dataKey="out_of_reach" name={`${rival} holds (out of reach)`} stackId="a"
+                          fill="var(--c5)" fillOpacity={0.3} radius={[0, 3, 3, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+                <p className="note">
+                  Each bar is <b>{rival}’s</b> volume in that category; the <b style={{ color: 'var(--good)' }}>green</b> part
+                  is the contestable slice where our share is close enough to flip. Same scale, so
+                  you can see both <em>how big</em> the rival is and <em>how much is actually winnable</em>.
+                </p>
+                <div className="tbl-wrap" style={{ maxHeight: 150 }}>
+                  <table>
+                    <thead><tr><th>District</th><th>State</th>
+                      <th className="n">They hold</th><th className="n">Winnable</th></tr></thead>
+                    <tbody>
+                      {d.top_districts.map((r: any) => (
+                        <tr key={r.district + r.state}>
+                          <td>{r.district}</td><td className="muted">{r.state}</td>
+                          <td className="n">{fmt.units(r.theirs)}</td>
+                          <td className="n pos">{fmt.units(r.winnable)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )
+          }}</Async>
         </Card>
 
         <Card title="Price and reach — how each brand competes"

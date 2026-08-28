@@ -67,6 +67,18 @@ def _root_con() -> duckdb.DuckDBPyConnection:
         "geo_blocks": CURATED / "geo_blocks.parquet",
         "geo_villages": CURATED / "geo_villages.parquet",
         "dealers": CURATED / "dealers.parquet",
+        "dealer_network": MARTS / "dealer_network.parquet",
+        "dealer_by_oem": MARTS / "dealer_by_oem.parquet",
+        "agroclimate": MARTS / "agroclimate.parquet",
+        "subsidy": MARTS / "subsidy.parquet",
+        "micromarkets": MARTS / "micromarkets.parquet",
+        "archetypes_mart": MARTS / "micromarket_archetypes.parquet",
+        "village_micromarket": MARTS / "village_micromarket.parquet",
+        "micromarket_ops": MARTS / "micromarket_ops.parquet",
+        "archetype_ops": MARTS / "archetype_ops.parquet",
+        "ucm_arch_decomposition": MARTS / "ucm_archetype_decomposition.parquet",
+        "ucm_arch_betas": MARTS / "ucm_archetype_betas.parquet",
+        "ucm_arch_diagnostics": MARTS / "ucm_archetype_diagnostics.parquet",
         "competition": CURATED / "competition_shares.parquet",
         "district_series": CURATED / "district_series.parquet",
     }
@@ -623,6 +635,524 @@ def compete(district_id: str | None = None, category: str | None = None):
     w = (" WHERE " + " AND ".join(where)) if where else ""
     return q(f"""SELECT player, category, avg(share) AS "share"
                  FROM competition{w} GROUP BY 1,2 ORDER BY "share" DESC""", params)
+
+
+# ---------------------------------------------------------------- define: micro-markets & archetypes
+
+_MM_METRICS = {"tiv", "potential_units_yr", "sonalika_share", "n_villages"}
+_CUSTOM_PATH = MARTS / "custom_archetypes.json"
+_CROP_SHARES = ["crop_wheat_share", "crop_rice_share", "crop_cotton_share",
+                "crop_soybean_share", "crop_sugarcane_share", "crop_maize_share"]
+
+
+def _load_rules() -> list[dict]:
+    import json as _j
+    if _CUSTOM_PATH.exists():
+        try:
+            return _j.loads(_CUSTOM_PATH.read_text())
+        except Exception:                                      # noqa: BLE001
+            return []
+    return []
+
+
+def _save_rules(rules: list[dict]) -> None:
+    import json as _j
+    _CUSTOM_PATH.write_text(_j.dumps(rules))
+
+
+def _apply_rules(df: pd.DataFrame, rules: list[dict]) -> pd.DataFrame:
+    """Reassign micro-markets that match each active custom rule to that new archetype.
+
+    Applied in order; later rules win. Thresholds are computed against the base
+    population so a rule means the same thing regardless of order.
+    """
+    for rule in rules:
+        m = pd.Series(True, index=df.index)
+        if rule.get("tiv") == "high":
+            m &= df["tiv"] >= df["tiv"].quantile(0.66)
+        elif rule.get("tiv") == "low":
+            m &= df["tiv"] <= df["tiv"].quantile(0.33)
+        if rule.get("hp_belt"):
+            m &= df["hp_belt"] == rule["hp_belt"]
+        crop = rule.get("crop")
+        if crop and f"crop_{crop}_share" in df.columns:
+            m &= df[f"crop_{crop}_share"] >= 0.15
+        if rule.get("irrigation") == "irrigated":
+            m &= df["irrigation_reliability"] >= df["irrigation_reliability"].median()
+        elif rule.get("irrigation") == "rainfed":
+            m &= df["irrigation_reliability"] < df["irrigation_reliability"].median()
+        if rule.get("subzone_id"):
+            m &= df["subzone_id"] == rule["subzone_id"]
+        if rule.get("zone"):
+            m &= df["zone"] == rule["zone"]
+        df.loc[m, "archetype"] = rule["name"]
+        df.loc[m, "base_name"] = rule["name"]
+        df.loc[m, "hp_belt"] = "(custom)"
+        df.loc[m, "tiv_tier"] = "(custom)"
+        df.loc[m, "subzone"] = "(custom)"
+        df.loc[m, "archetype_id"] = "custom-" + rule["name"]
+    return df
+
+
+def _current_mm() -> pd.DataFrame:
+    """The micro-market table with any active custom archetypes applied -- the single
+    source every Define view reads, so a reconfigure shows up on all tabs at once."""
+    df = con().execute("SELECT * FROM micromarkets").fetchdf()
+    return _apply_rules(df, _load_rules())
+
+
+def _summarise_mm(df: pd.DataFrame) -> list[dict]:
+    rows = []
+    # group by the unique archetype_id (sub-zone | TIV | HP), NOT the display name -- names
+    # repeat across sub-zones by design (crop+TIV), so the sub-zone still divides them.
+    for aid, g in df.groupby("archetype_id"):
+        tiv = float(g["tiv"].sum())
+        rows.append({
+            "archetype_id": str(aid), "archetype": g["archetype"].iloc[0],
+            "base_name": g["base_name"].iloc[0], "hp_belt": g["hp_belt"].iloc[0],
+            "zone": g["zone"].iloc[0], "zone_name": g["zone_name"].iloc[0],
+            "subzone_id": g["subzone_id"].iloc[0], "subzone": g["subzone"].iloc[0],
+            "lgp": g["lgp"].iloc[0], "tiv_tier": g["tiv_tier"].iloc[0],
+            "n_micromarkets": int(len(g)), "n_villages": int(g["n_villages"].sum()),
+            "tiv": round(tiv),
+            "avg_sonalika_share": round(float((g["sonalika_share"] * g["tiv"]).sum() / max(tiv, 1)), 4),
+            "potential_units_yr": round(float(g["potential_units_yr"].sum())),
+            "mean_hp": round(float((g["mean_hp"] * g["tiv"]).sum() / max(tiv, 1)), 1),
+            "states": ", ".join(g["state"].value_counts().head(3).index),
+            "is_custom": bool(str(g["archetype_id"].iloc[0]).startswith("custom-")),
+        })
+    rows.sort(key=lambda r: -r["potential_units_yr"])
+    return rows
+
+
+@app.get("/api/define/districts")
+def define_districts():
+    """District profile for Define: real agro-climate (incl. crop-mix) + modelled TIV/share."""
+    crop_sel = ", ".join(f"a.{c}" for c in _CROP_SHARES)
+    rows = q(f"""
+        SELECT a.district_id, a.district, a.state,
+               a.mean_temp, a.temp_seasonality, a.rain_normal_mm, a.rain_departure_pct,
+               a.total_crop_area_lha, a.top_crops, a.temp_is_allocated, {crop_sel},
+               m.tiv, m.sonalika_share, m.n_micromarkets, m.n_villages,
+               m.subzone_id, m.subzone, m.zone_name, m.lgp,
+               t.potential_units_yr AS demand_units
+        FROM agroclimate a
+        LEFT JOIN (SELECT district_id, sum(tiv) AS tiv,
+                          count(*) AS n_micromarkets, sum(n_villages) AS n_villages,
+                          sum(tiv * sonalika_share) / nullif(sum(tiv), 0) AS sonalika_share,
+                          max(subzone_id) AS subzone_id, max(subzone) AS subzone,
+                          max(zone_name) AS zone_name, max(lgp) AS lgp
+                   FROM micromarkets GROUP BY district_id) m USING (district_id)
+        LEFT JOIN district_totals t USING (district_id)
+        ORDER BY a.state, a.district
+    """)
+    return {"provenance": "mixed", "districts": rows}
+
+
+@app.get("/api/archetypes")
+def archetypes():
+    """Base-segment x HP-belt archetypes (with any active custom archetypes applied)."""
+    df = _current_mm()
+    rows = _summarise_mm(df)
+    tot_tiv = sum(r["tiv"] for r in rows) or 1
+    totals = {
+        "n_archetypes": len(rows),
+        "n_micromarkets": int(len(df)),
+        "n_villages": int(df["n_villages"].sum()),
+        "tiv": sum(r["tiv"] for r in rows),
+        "potential_units_yr": sum(r["potential_units_yr"] for r in rows),
+        "avg_sonalika_share": sum(r["avg_sonalika_share"] * r["tiv"] for r in rows) / tot_tiv,
+    }
+    belts = []
+    for belt, g in df.groupby("hp_belt"):
+        belts.append({"hp_belt": belt, "archetypes": int(g["archetype_id"].nunique()),
+                      "micromarkets": int(len(g)), "tiv": round(float(g["tiv"].sum()))})
+    belts.sort(key=lambda b: -b["tiv"])
+    # NARP sub-zones present (the agro-climatic axis), for display + the Configure dropdown
+    zones = []
+    for (zid, zn, sid, sub, lgp), g in df[df["subzone_id"] != ""].groupby(
+            ["zone", "zone_name", "subzone_id", "subzone", "lgp"]):
+        zones.append({"zone": zid, "zone_name": zn, "subzone_id": sid, "subzone": sub,
+                      "lgp": lgp, "micromarkets": int(len(g)), "tiv": round(float(g["tiv"].sum())),
+                      "states": ", ".join(g["state"].value_counts().head(3).index)})
+    zones.sort(key=lambda z: (z["zone"], z["subzone_id"]))
+    n_custom = sum(1 for r in rows if r["is_custom"])
+    return {"provenance": "allocated", "archetypes": rows, "totals": clean(totals),
+            "hp_belts": belts, "subzones": zones, "custom_count": n_custom}
+
+
+@app.get("/api/micromarkets")
+def micromarkets(district: str | None = None, archetype: str | None = None,
+                 hp_belt: str | None = None, metric: str = "tiv", limit: int = 600):
+    metric = metric if metric in _MM_METRICS else "tiv"
+    df = _current_mm()
+    if district:
+        df = df[df["district_id"] == district]
+    if archetype:
+        df = df[df["archetype"] == archetype]
+    if hp_belt:
+        df = df[df["hp_belt"] == hp_belt]
+    df = df.sort_values(metric, ascending=False).head(limit)
+    keep = ["micro_market_id", "district_id", "district", "state", "lon", "lat",
+            "n_villages", "tiv", "mean_hp", "hp_belt", "sonalika_share",
+            "potential_units_yr", "archetype", "base_name", "zone", "zone_name",
+            "subzone_id", "subzone", "lgp", "tiv_tier", "mean_temp",
+            "rain_normal_mm", "top_crops", "dominant_crop", "dealer_accessibility"]
+    return {"metric": metric, "micromarkets": clean(df[keep].to_dict("records"))}
+
+
+@app.get("/api/micromarket/{mm_id}")
+def micromarket_detail(mm_id: str):
+    df = _current_mm()
+    row = df[df["micro_market_id"] == mm_id]
+    mm = clean(row.to_dict("records"))[0] if len(row) else None
+    villages = q("""SELECT g.village_id, g.village, g.lon, g.lat,
+                           t.potential_units_yr, t.addressable
+                    FROM village_micromarket v
+                    JOIN geo_villages g USING (village_id)
+                    LEFT JOIN village_totals t USING (village_id)
+                    WHERE v.micro_market_id = ? ORDER BY t.potential_units_yr DESC""", [mm_id])
+    return {"micromarket": mm, "villages": villages}
+
+
+class ConfigureRule(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    tiv: str | None = None          # 'high' | 'low' | None
+    hp_belt: str | None = None      # e.g. '41-50 HP'
+    crop: str | None = None         # 'wheat' | 'rice' | 'cotton' | 'soybean' | 'sugarcane'
+    irrigation: str | None = None   # 'irrigated' | 'rainfed' | None
+    subzone_id: str | None = None   # NARP sub-zone id, e.g. '6.4'
+    zone: str | None = None         # NARP zone id, e.g. '6'
+
+
+@app.post("/api/archetypes/configure")
+def configure(rule: ConfigureRule):
+    """Define a NEW archetype from a rule and PERSIST it, so every Define tab updates.
+
+    The rule (thresholds over TIV, HP belt, crop share, irrigation) is saved; matching
+    micro-markets are reassigned to the new archetype on every read. Re-running with an
+    existing name replaces that rule. Deterministic and transparent.
+    """
+    rules = [r for r in _load_rules() if r.get("name") != rule.name]
+    rules.append(rule.model_dump(exclude_none=True))
+    _save_rules(rules)
+
+    df = _current_mm()
+    matched = df[df["archetype"] == rule.name]
+    summary = _summarise_mm(df)
+    return {"new_archetype": rule.name, "moved_micromarkets": int(len(matched)),
+            "n_archetypes": len(summary), "custom_count": len(rules),
+            "archetypes": summary}
+
+
+@app.post("/api/archetypes/reset")
+def configure_reset():
+    """Clear all custom archetypes -- revert Define to the base base-segment x HP model."""
+    _save_rules([])
+    df = _current_mm()
+    return {"n_archetypes": df["archetype"].nunique(), "custom_count": 0}
+
+
+# ---------------------------------------------------------------- review: what drives sales (archetype UCM)
+
+@app.get("/api/archetype-ucm/decomposition")
+def archetype_ucm_decomposition(archetype_id: str):
+    """Daily causal decomposition for one archetype: actual, baseline (trend+seasonal,
+    stripped of weather/holiday/promo/price/competition), predicted, and each factor's
+    uplift. Sales history is SIMULATED (no real daily/weekly Sonalika feed exists)."""
+    rows = q("SELECT * FROM ucm_arch_decomposition WHERE archetype_id = ? ORDER BY date",
+             [archetype_id])
+    if not rows:
+        raise HTTPException(404, "archetype not fitted")
+    diag = q("SELECT * FROM ucm_arch_diagnostics WHERE archetype_id = ?", [archetype_id])
+    return {"archetype_id": archetype_id, "provenance": "simulated", "series": rows,
+            "diagnostics": diag[0] if diag else None}
+
+
+@app.get("/api/archetype-ucm/elasticities")
+def archetype_ucm_elasticities(archetype_id: str | None = None):
+    if archetype_id:
+        return q("SELECT * FROM ucm_arch_betas WHERE archetype_id = ? ORDER BY abs(beta) DESC",
+                 [archetype_id])
+    return q("""SELECT regressor, label, expected_sign,
+                       avg(beta) beta, avg(true_beta) true_beta,
+                       avg(ci_low) ci_low, avg(ci_high) ci_high,
+                       avg(CASE WHEN significant THEN 1 ELSE 0 END) sig_share,
+                       avg(CASE WHEN sign_ok THEN 1 ELSE 0 END) sign_ok_share,
+                       count(*) n_archetypes
+                FROM ucm_arch_betas GROUP BY 1,2,3 ORDER BY abs(avg(beta)) DESC""")
+
+
+@app.get("/api/archetype-ucm/diagnostics")
+def archetype_ucm_diagnostics():
+    return {"archetypes": q("""SELECT d.*, a.base_name, a.hp_belt, a.diagnosis
+                               FROM ucm_arch_diagnostics d
+                               LEFT JOIN archetype_ops a USING (archetype_id)
+                               ORDER BY backtest_wape""")}
+
+
+@app.get("/api/archetype-ucm/uplift")
+def archetype_ucm_uplift(archetype_id: str, days: int = 180):
+    """Trailing-vs-prior-period uplift attribution, in sales units (this model is a
+    levels model, not log, so the delta is additive units, not log-percent)."""
+    d = con().execute(
+        "SELECT * FROM ucm_arch_decomposition WHERE archetype_id = ? ORDER BY date",
+        [archetype_id]).fetchdf()
+    if d.empty:
+        raise HTTPException(404, "archetype not fitted")
+    if len(d) < days * 2:
+        raise HTTPException(400, "series too short for this comparison window")
+
+    cur, prev = d.iloc[-days:], d.iloc[-2 * days:-days]
+    uplift_cols = [c for c in d.columns if c.startswith("uplift_")]
+    comps = ["baseline"] + uplift_cols + ["residual"]
+    prev_total = float(prev["actual_sales"].sum())
+    cur_total = float(cur["actual_sales"].sum())
+    out = []
+    for c in comps:
+        delta_units = float(cur[c].sum() - prev[c].sum())
+        if abs(delta_units) < 1e-6:
+            continue
+        out.append({
+            "component": c.replace("uplift_", "").replace("baseline", "Baseline (trend+seasonal)")
+                          .replace("residual", "Unexplained"),
+            "kind": "structural" if c in ("baseline", "residual") else "factor",
+            "delta_units": round(delta_units, 1),
+            "pp_of_growth": round(delta_units / max(prev_total, 1e-6) * 100, 2),
+        })
+    out.sort(key=lambda x: -abs(x["delta_units"]))
+    return {"archetype_id": archetype_id, "days": days,
+            "total_growth_pct": round((cur_total - prev_total) / max(prev_total, 1e-6) * 100, 2),
+            "current_units": round(cur_total, 1), "prior_units": round(prev_total, 1),
+            "components": out}
+
+
+# ---------------------------------------------------------------- plan: subsidy + sizing (REAL)
+
+@app.get("/api/subsidy")
+def subsidy(state: str | None = None):
+    """Real equipment-subsidy rates by state (Punjab/Maharashtra real; MP = SMAM proxy)."""
+    where = "WHERE s.state = ?" if state else ""
+    rows = q(f"""
+        SELECT s.state, s.sku_id, r.name, s.category, r.category_label,
+               s.subsidy_pct, s.provenance
+        FROM subsidy s LEFT JOIN sku_ref r USING (sku_id)
+        {where} ORDER BY s.subsidy_pct DESC, s.category
+    """, [state] if state else [])
+    return {"rows": rows}
+
+
+@app.get("/api/plan/priorities")
+def plan_priorities(state: str = "Punjab", product: str = "implements"):
+    """Focus-product ranking: demand potential met with the real subsidy lever per state.
+
+    High demand + high subsidy is the fastest-moving push; the subsidy column is real for
+    Punjab/Maharashtra and a national-SMAM proxy for MP.
+    """
+    rows = q("""
+        SELECT ss.sku_id, r.name, ss.category, r.category_label,
+               ss.potential_units_yr AS units, ss.new_units_yr AS new_units,
+               ss.replacement_units_yr AS replace_units,
+               ss.potential_value_inr AS value,
+               sub.subsidy_pct, sub.provenance AS subsidy_provenance
+        FROM state_sku ss
+        LEFT JOIN sku_ref r USING (sku_id)
+        LEFT JOIN subsidy sub ON sub.state = ss.state AND sub.sku_id = ss.sku_id
+        WHERE ss.state = ?
+        ORDER BY ss.potential_units_yr DESC
+    """, [state])
+    return {"state": state, "product_line": product, "skus": rows}
+
+
+@app.get("/api/plan/districts")
+def plan_districts():
+    """District priorities anchored to REAL cropland: demand vs DES cropped area, and the
+    demand intensity per '000 ha -- an under-penetrated district has high cropland but low
+    demand-per-hectare captured today."""
+    rows = q("""
+        SELECT t.district_id, t.district, t.state,
+               t.potential_units_yr AS units,
+               a.total_crop_area_lha AS crop_area_lha,
+               CASE WHEN a.total_crop_area_lha > 0
+                    THEN t.potential_units_yr / (a.total_crop_area_lha * 100.0) END AS units_per_kha
+        FROM district_totals t
+        LEFT JOIN agroclimate a USING (district_id)
+        ORDER BY t.potential_units_yr DESC
+    """)
+    return {"provenance": "real", "districts": rows}
+
+
+# ---------------------------------------------------------------- agro-climate (REAL)
+
+@app.get("/api/agroclimate")
+def agroclimate():
+    """Real district agro-climatic profile: temperature, IMD rainfall, DES crop-mix.
+
+    This is the real half of a micro-market's definition (the other half, tractor TIV /
+    HP mix, is still ITL-pending). Joined to demand so the Define stage can show what
+    kind of place each district is.
+    """
+    rows = q("""
+        SELECT a.district_id, a.district, a.state,
+               a.mean_temp, a.temp_seasonality, a.rain_normal_mm, a.rain_departure_pct,
+               a.total_crop_area_lha, a.top_crops,
+               a.crop_wheat_share, a.crop_rice_share, a.crop_cotton_share,
+               a.crop_soybean_share, a.crop_sugarcane_share, a.crop_maize_share,
+               a.temp_is_allocated, a.provenance,
+               t.potential_units_yr AS demand_units
+        FROM agroclimate a
+        LEFT JOIN district_totals t USING (district_id)
+        ORDER BY a.state, a.district
+    """)
+    return {"provenance": "real", "temp_note": "station data covers 31 districts; "
+            "the rest are filled from the nearest station (allocated)", "districts": rows}
+
+
+# ---------------------------------------------------------------- review: operational detail
+
+_OPS_METRICS = {"sonalika_sales_units", "tiv", "sonalika_share", "potential_units_yr",
+                "activities_yr", "enquiries_yr", "deliveries_yr", "product_fit"}
+
+
+@app.get("/api/review/micromarkets")
+def review_micromarkets(district: str | None = None, archetype_id: str | None = None,
+                        metric: str = "sonalika_sales_units", limit: int = 700):
+    metric = metric if metric in _OPS_METRICS else "sonalika_sales_units"
+    df = con().execute("SELECT * FROM micromarket_ops").fetchdf()
+    if district:
+        df = df[df["district_id"] == district]
+    if archetype_id:
+        df = df[df["archetype_id"] == archetype_id]
+    df = df.sort_values(metric, ascending=False).head(limit)
+    return {"metric": metric, "micromarkets": clean(df.to_dict("records"))}
+
+
+@app.get("/api/review/micromarket/{mm_id}")
+def review_micromarket(mm_id: str):
+    df = con().execute("SELECT * FROM micromarket_ops WHERE micro_market_id = ?",
+                       [mm_id]).fetchdf()
+    return {"micromarket": clean(df.to_dict("records"))[0] if len(df) else None}
+
+
+@app.get("/api/review/coverage")
+def review_coverage(product: str = "implements", type: str = "sales"):
+    """Network coverage per archetype: Sonalika vs rival OEMs, sales (real dealers) and
+    service (dummy). pct_covered = share of an archetype's micro-markets whose district has
+    at least one Sonalika dealer (real for implements)."""
+    net = con().execute(
+        "SELECT district_id, own_dealers FROM dealer_network WHERE product_line = ?",
+        [product]).fetchdf()
+    covered = set(net.loc[net["own_dealers"] > 0, "district_id"])
+    mmd = con().execute("SELECT archetype_id, district_id FROM micromarket_ops").fetchdf()
+    mmd["cov"] = mmd["district_id"].isin(covered)
+    pct = mmd.groupby("archetype_id")["cov"].mean().to_dict()
+
+    arch = con().execute(
+        """SELECT archetype_id, base_name, hp_belt, subzone_id, subzone, n_micromarkets,
+                  diagnosis, sales_coverage, service_coverage, avg_sonalika_share
+           FROM archetype_ops""").fetchdf()
+    arch["coverage"] = arch["service_coverage" if type == "service" else "sales_coverage"]
+    arch["pct_covered"] = arch["archetype_id"].map(pct).fillna(0.0)
+    arch = arch.sort_values("coverage")           # worst-covered first = the gap
+
+    def _sum(like_not: bool):
+        op = "NOT LIKE" if like_not else "LIKE"
+        r = q(f"SELECT sum(dealers) d FROM dealer_by_oem WHERE product_line = ? "
+              f"AND lower(oem) {op} '%sonalika%'", [product])
+        return int(r[0]["d"] or 0)
+
+    oems = q("""SELECT oem, sum(dealers) AS dealers, count(DISTINCT district_id) AS districts
+                FROM dealer_by_oem WHERE product_line = ? AND lower(oem) NOT LIKE '%sonalika%'
+                GROUP BY oem ORDER BY dealers DESC LIMIT 6""", [product])
+    return {"product_line": product, "type": type,
+            "provenance": "real" if type == "sales" else "simulated",
+            "own_dealers": _sum(False), "competitor_dealers": _sum(True),
+            "archetypes": clean(arch.to_dict("records")), "oems": oems}
+
+
+@app.get("/api/review/archetypes")
+def review_archetypes():
+    rows = q("SELECT * FROM archetype_ops ORDER BY potential_units_yr DESC")
+    diag = q("""SELECT diagnosis, count(*) AS archetypes, sum(n_micromarkets) AS micromarkets,
+                       sum(potential_units_yr) AS demand, sum(sonalika_sales_units) AS sales
+                FROM archetype_ops GROUP BY diagnosis ORDER BY demand DESC""")
+    tot = q("""SELECT sum(sonalika_sales_units) AS sales, sum(activities_yr) AS activities,
+                      sum(enquiries_yr) AS enquiries, sum(deliveries_yr) AS deliveries,
+                      sum(potential_units_yr) AS demand FROM archetype_ops""")[0]
+    return {"provenance": "simulated", "archetypes": rows,
+            "diagnosis": diag, "totals": tot}
+
+
+# ---------------------------------------------------------------- dealer network (REAL)
+
+@app.get("/api/network")
+def network(product: str = "implements"):
+    """Real dealer-network coverage per district: own (Sonalika) vs competitor.
+
+    Every district is returned (left-joined onto demand) so white-space -- real demand
+    with no Sonalika dealer -- is visible, not just districts that already have one.
+    Demand is the implement-demand mart; it is only meaningful for the implements line,
+    so it is nulled for tractors (whose demand awaits ITL TIV data).
+    """
+    rows = q("""
+        SELECT d.district_id, d.district, d.state, d.zone,
+               COALESCE(n.own_dealers, 0)        AS own_dealers,
+               COALESCE(n.competitor_dealers, 0) AS competitor_dealers,
+               COALESCE(n.total_dealers, 0)      AS total_dealers,
+               COALESCE(n.n_oems, 0)             AS n_oems,
+               t.potential_units_yr             AS demand_units
+        FROM district_totals t
+        JOIN geo_districts d USING (district_id)
+        LEFT JOIN dealer_network n
+               ON n.district_id = d.district_id AND n.product_line = ?
+        ORDER BY t.potential_units_yr DESC
+    """, [product])
+    is_impl = product == "implements"
+    # Which states are actually present in the dealer dataset for this line? The
+    # implements DB has no Punjab rows at all, so Punjab is "no data", not white-space --
+    # calling an absent state white-space would imply a gap we cannot actually see.
+    covered_states = {r["state"] for r in rows if r["total_dealers"] > 0}
+    for r in rows:
+        if not is_impl:
+            r["demand_units"] = None
+        r["has_dealer_data"] = r["state"] in covered_states
+        if r["own_dealers"] > 0:
+            r["status"] = "covered"
+        elif not r["has_dealer_data"]:
+            r["status"] = "no_data"
+        elif is_impl and (r["demand_units"] or 0) > 0:
+            r["status"] = "whitespace"
+        else:
+            r["status"] = "no_own"
+        r["whitespace"] = r["status"] == "whitespace"
+    return {"product_line": product, "provenance": "real",
+            "covered_states": sorted(covered_states), "districts": rows}
+
+
+@app.get("/api/network/summary")
+def network_summary(product: str = "implements"):
+    res = network(product)
+    d = res["districts"]
+    own = sum(r["own_dealers"] for r in d)
+    comp = sum(r["competitor_dealers"] for r in d)
+    with_data = [r for r in d if r["has_dealer_data"]]
+    covered = sum(1 for r in d if r["own_dealers"] > 0)
+    ws = [r for r in d if r["whitespace"]]
+    return {
+        "product_line": product, "provenance": "real",
+        "covered_states": res["covered_states"],
+        "own_dealers": own, "competitor_dealers": comp,
+        "districts_total": len(d), "districts_with_data": len(with_data),
+        "districts_covered": covered,
+        "districts_no_data": len(d) - len(with_data),
+        "whitespace_districts": len(ws),
+        "whitespace_demand": sum(r["demand_units"] or 0 for r in ws),
+        "top_competitors": q("""
+            SELECT oem, sum(dealers) AS dealers, count(DISTINCT district_id) AS districts
+            FROM dealer_by_oem WHERE product_line = ? AND lower(oem) NOT LIKE '%sonalika%'
+            GROUP BY oem ORDER BY dealers DESC LIMIT 6
+        """, [product]),
+    }
 
 
 # ---------------------------------------------------------------- map shapes

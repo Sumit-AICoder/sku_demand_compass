@@ -71,6 +71,28 @@ export const api = {
   lookalike: (village_id: string, n = 20) => get<any[]>('/lookalike', { village_id, n }),
   scenario: (body: unknown) => post<any>('/scenario', body),
   compete: (p: { district_id?: string; category?: string }) => get<any[]>('/compete', p),
+  network: (product: string) => get<{ product_line: string; provenance: string; districts: any[] }>('/network', { product }),
+  networkSummary: (product: string) => get<any>('/network/summary', { product }),
+  reviewMicromarkets: (p: { district?: string; archetype_id?: string; metric?: string; limit?: number }) =>
+    get<{ metric: string; micromarkets: any[] }>('/review/micromarkets', p),
+  reviewMicromarket: (id: string) => get<{ micromarket: any }>(`/review/micromarket/${id}`),
+  reviewArchetypes: () => get<{ archetypes: any[]; diagnosis: any[]; totals: any }>('/review/archetypes'),
+  reviewCoverage: (product: string, type: string) => get<{ product_line: string; type: string; provenance: string; own_dealers: number; competitor_dealers: number; archetypes: any[]; oems: any[] }>('/review/coverage', { product, type }),
+  archetypeUcmDecomposition: (archetype_id: string) => get<{ archetype_id: string; provenance: string; series: any[]; diagnostics: any }>('/archetype-ucm/decomposition', { archetype_id }),
+  archetypeUcmElasticities: (archetype_id?: string) => get<any[]>('/archetype-ucm/elasticities', { archetype_id }),
+  archetypeUcmDiagnostics: () => get<{ archetypes: any[] }>('/archetype-ucm/diagnostics'),
+  archetypeUcmUplift: (archetype_id: string, days: number) => get<any>('/archetype-ucm/uplift', { archetype_id, days }),
+  agroclimate: () => get<{ provenance: string; temp_note: string; districts: any[] }>('/agroclimate'),
+  defineDistricts: () => get<{ districts: any[] }>('/define/districts'),
+  archetypes: () => get<{ archetypes: any[]; totals: any; hp_belts: any[]; subzones: any[] }>('/archetypes'),
+  micromarkets: (p: { district?: string; archetype?: string; hp_belt?: string; metric?: string; limit?: number }) =>
+    get<{ metric: string; micromarkets: any[] }>('/micromarkets', p),
+  micromarketDetail: (id: string) => get<{ micromarket: any; villages: any[] }>(`/micromarket/${id}`),
+  configureArchetype: (rule: unknown) => post<{ new_archetype: string; moved_micromarkets: number; n_archetypes: number; custom_count: number; archetypes: any[] }>('/archetypes/configure', rule),
+  resetArchetypes: () => post<{ n_archetypes: number; custom_count: number }>('/archetypes/reset', {}),
+  subsidy: (state?: string) => get<{ rows: any[] }>('/subsidy', { state }),
+  planPriorities: (state: string, product: string) => get<{ state: string; skus: any[] }>('/plan/priorities', { state, product }),
+  planDistricts: () => get<{ provenance: string; districts: any[] }>('/plan/districts'),
 }
 
 export const fmt = {

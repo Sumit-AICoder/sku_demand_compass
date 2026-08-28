@@ -12,7 +12,7 @@ export function Card({ title, note, children, tight }: {
   )
 }
 
-export function Kpi({ k, v, s }: { k: string; v: React.ReactNode; s?: React.ReactNode }) {
+export function Kpi({ k, v, s }: { k: React.ReactNode; v: React.ReactNode; s?: React.ReactNode }) {
   return <div className="kpi"><div className="k">{k}</div><div className="v">{v}</div>{s && <div className="s">{s}</div>}</div>
 }
 

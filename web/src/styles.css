@@ -354,3 +354,92 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .md code { font-family: var(--mono); font-size: 11.5px; background: var(--panel-2);
            border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 .bubble.user .btext { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- four-stage shell ---------- */
+.switch { display: flex; gap: 2px; padding: 2px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; }
+.switch button { border: 1px solid transparent; background: none; color: var(--text-2);
+  padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.switch button.on { background: var(--accent); color: #fff; }
+
+.nav .stage-tab { display: inline-flex; align-items: center; gap: 6px; }
+.nav .stage-n { display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; background: var(--border-strong);
+  color: var(--panel); font-size: 10px; font-weight: 700; }
+.nav .stage-tab.on .stage-n { background: var(--accent); color: #fff; }
+.nav .util { margin-left: 6px; color: var(--text-3); font-size: 11px; }
+
+.banner-warn { padding: 7px 18px; font-size: 12px; background: var(--accent-soft);
+  color: var(--text-2); border-bottom: 1px solid var(--border); }
+
+.stage-intro { padding: 12px 18px 0; background: var(--panel);
+  border-bottom: 1px solid var(--border); }
+.stage-head { display: flex; gap: 11px; align-items: flex-start; }
+.stage-badge { flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+  font-weight: 700; font-size: 14px; margin-top: 1px; }
+.stage-head b { font-size: 14px; }
+.stage-qo { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--text-2);
+  margin-top: 3px; }
+.stage-qo i { color: var(--text-3); font-style: normal; text-transform: uppercase;
+  font-size: 10px; letter-spacing: .04em; margin-right: 4px; }
+.subnav { display: flex; gap: 2px; margin-top: 11px; }
+.subnav button { border: none; background: none; color: var(--text-2); cursor: pointer;
+  padding: 7px 12px; font-size: 12.5px; border-bottom: 2px solid transparent; }
+.subnav button:hover { color: var(--text); }
+.subnav button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* provenance pills — the client's data-tier colour code */
+.pill { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
+  border-radius: 9px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
+.pill-client { background: #fff3cd; color: #7a5b00; }        /* ITL / client */
+.pill-secondary { background: #d1f2eb; color: #0b6b57; }     /* EY secondary */
+.pill-primary { background: #efe0fb; color: #6b3fa0; }       /* EY primary */
+.pill-real { background: #d7f2df; color: #1a7f4b; }          /* real data now */
+@media (prefers-color-scheme: dark) {
+  .pill-client { background: #3a3320; color: #e6cf7a; }
+  .pill-secondary { background: #123832; color: #5fd0b6; }
+  .pill-primary { background: #2b2140; color: #c9a6f2; }
+  .pill-real { background: #14331f; color: #6fdc8c; }
+}
+
+.stage-note { font-size: 12.5px; color: var(--text-2); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 13px; }
+.row-click { cursor: pointer; } .row-click:hover { background: var(--panel-2); }
+.row-on { background: var(--accent-soft); }
+.pb-row { display: grid; grid-template-columns: 150px 1fr; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid var(--border); font-size: 13px; }
+.pb-k { color: var(--text-3); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.pb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.pb-cell { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+  display: flex; flex-direction: column; gap: 4px; }
+
+/* network coverage view */
+td.dim, .dim { color: var(--text-3); }
+.row-ws { background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.row-ws td:first-child { font-weight: 600; }
+
+/* agro-climate crop-mix bar */
+.cropbar { display: flex; height: 14px; border-radius: 3px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--border); }
+.cropbar span { display: block; height: 100%; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 5px; vertical-align: middle; }
+th.srt:hover { color: var(--accent); }
+
+/* plan priorities */
+.row-push { background: color-mix(in srgb, var(--good) 8%, transparent); }
+.row-push td:first-child { font-weight: 600; }
+
+/* configure form */
+.cfg-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.cfg-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.cfg-form input, .cfg-form select { min-width: 150px; }
+.btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 8px;
+  padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-primary:disabled { opacity: .5; cursor: default; }
+
+.btn-ghost { background: none; color: var(--text-2); border: 1px solid var(--border-strong);
+  border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+.btn-ghost:disabled { opacity: .5; cursor: default; }
