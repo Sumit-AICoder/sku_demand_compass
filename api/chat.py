@@ -31,8 +31,10 @@ LOG = log("chat")
 # The nine real categories. A model asked for "horticulture" (a crop, not a category)
 # and got an empty result it could not diagnose; the tools now reject an invalid value
 # with the valid ones attached, so the next turn can self-correct.
-VALID_CATEGORIES = {"tillage", "sowing", "crop_protection", "irrigation", "harvesting",
-                    "residue", "post_harvest", "haulage", "precision"}
+# Read from the catalogues rather than restated here, so a category cannot drift out of
+# sync with the data -- which is exactly what happened when tractors were added as a second
+# product line and the hardcoded nine no longer described what the marts held.
+VALID_CATEGORIES = set(Config.sku_categories())
 
 # Words that appear across many product names and so identify none of them.
 GENERIC_WORDS = {"tractor", "tractors", "farm", "agricultural", "agriculture", "machine",
@@ -757,7 +759,13 @@ def _match_sku(ql: str) -> str | None:
             if not v:
                 continue
             score = 0.0
-            if len(v) > 4 and v in ql:
+            # The generic-word guard has to cover the substring shortcut too, not just the
+            # word-overlap branch below. Once tractors became a product line, the SKU id
+            # TRACTOR_20_35 cleaned down to the bare word "tractor", which is a substring of
+            # "how are tractors selling" -- so the shortcut named one HP band as the answer
+            # to a question about the whole line.
+            generic = all(w in GENERIC_WORDS for w in v.split())
+            if len(v) > 4 and v in ql and not generic:
                 score = len(v) * 2.0                    # full product named outright
             else:
                 # "tractor", "farm" and friends appear in many product names, so matching

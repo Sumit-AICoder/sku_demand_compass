@@ -14,7 +14,7 @@ const CROPS: Array<[string, string, string]> = [
   ['crop_sugarcane_share', 'Sugarcane', 'var(--c6)'],
 ]
 
-type Sort = 'rain_normal_mm' | 'mean_temp' | 'tiv' | 'sonalika_share' | 'demand_units'
+type Sort = 'rain_normal_mm' | 'mean_temp' | 'tiv' | 'sonalika_share'
 
 export default function DistrictProfile() {
   const ac = useAsync(() => api.defineDistricts(), [])
@@ -44,7 +44,6 @@ export default function DistrictProfile() {
                 <th>District</th><th>State</th><th>NARP sub-zone</th>
                 {th('tiv', 'TIV')}
                 {th('sonalika_share', 'Sonalika %')}
-                {th('demand_units', 'Demand /yr')}
                 {th('mean_temp', 'Temp °C')}
                 {th('rain_normal_mm', 'Rain mm')}
                 <th style={{ width: 140 }}>Crop mix</th>
@@ -59,7 +58,6 @@ export default function DistrictProfile() {
                     <td style={{ textAlign: 'right' }}>{fmt.units(r.tiv)}</td>
                     <td style={{ textAlign: 'right' }}>
                       {r.sonalika_share != null ? `${(r.sonalika_share * 100).toFixed(1)}%` : '—'}</td>
-                    <td style={{ textAlign: 'right' }}>{fmt.units(r.demand_units)}</td>
                     <td style={{ textAlign: 'right' }}>
                       {r.mean_temp?.toFixed(1)}{r.temp_is_allocated && <span className="dim"> ~</span>}</td>
                     <td style={{ textAlign: 'right' }}>{r.rain_normal_mm ? Math.round(r.rain_normal_mm) : '—'}</td>

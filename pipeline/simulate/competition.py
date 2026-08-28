@@ -36,7 +36,10 @@ AFFINITY = {
 def build(spine, seed=20260822) -> pd.DataFrame:
     rng = np.random.default_rng(seed + 34)
     cfg = Config.sim()["competition"]
-    cats = list(Config.sku_categories())
+    # Implement categories only: the 13 players below and their affinity weights are
+    # implement brands. Tractor competition comes from the real 6-OEM dealer footprint,
+    # not from this hand-set choice model.
+    cats = list(Config.sku_categories("implements"))
     d = spine["districts"]
     players = cfg["players"]
 

@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react'
 import { api, fmt } from '../lib/api'
-import { Card, Async, useAsync, Kpi, PointMap } from './common'
+import { Card, Async, useAsync, Kpi, Info } from './common'
+import { GeoMap, MapPoint } from './GeoMap'
 
 /**
  * REVIEW · Archetype details — the micro-market signals rolled up to archetype level, with
@@ -11,12 +12,23 @@ const DIAG_COLOR: Record<string, string> = {
   'Defend': 'var(--good)', 'Sales issue': 'var(--c1)',
   'Product issue': 'var(--warn)', 'Monitor': 'var(--text-3)',
 }
+// Each of these states the rule that produced the label, not a mood. They are the answer to
+// "what does Monitor even mean", and they sit both on the diagnosis cards and on the
+// selected archetype, so the question is answered wherever it is asked.
 const DIAG_WHY: Record<string, string> = {
-  'Product issue': 'Low product fit — Sonalika cannot crack this archetype anywhere. Needs an adapted/new product, not more selling.',
-  'Sales issue': 'Product is proven (good fit) but share is low — an execution, coverage or effort gap that selling can close.',
-  'Defend': 'Already winning here — protect the share.',
-  'Monitor': 'Too little demand to prioritise now.',
+  'Product issue': 'Product fit below 48% — Sonalika cannot win this archetype anywhere in it, '
+    + 'so more selling will not move it. Needs an adapted or new product.',
+  'Sales issue': 'The product fits (48%+) but our share is under 10% — an execution, coverage '
+    + 'or effort gap, which is the kind selling can close.',
+  'Defend': 'Our share is 10% or more — we are already winning here, so the job is to protect it.',
+  'Monitor': 'Not a product or a selling problem: there is simply too little demand here to '
+    + 'plan against. The whole archetype earns less than its micro-market count would need to '
+    + 'clear the bar — the 20th-percentile micro-market\'s demand, times how many it has. '
+    + 'Revisit it when the fleet grows.',
 }
+// The same 10%-share bar the pipeline uses for cracked_pct (operations.py), so the map's
+// green fraction IS the "% of MM won" column beside it.
+const WON = 0.10
 
 export default function ArchetypeDetails() {
   const a = useAsync(() => api.reviewArchetypes(), [])
@@ -24,17 +36,20 @@ export default function ArchetypeDetails() {
   const mm = useAsync(() => api.reviewMicromarkets({ archetype_id: sel, metric: 'sonalika_sales_units', limit: 700 }),
                       [sel], !!sel)
   const chosen = a.data?.archetypes.find(r => r.archetype_id === sel)
-  const items = useMemo(() => (mm.data?.micromarkets ?? []).map(m => ({
-    id: m.micro_market_id, name: m.micro_market_id, lon: m.lon, lat: m.lat,
-    units: Number(m.sonalika_sales_units) || 0,
-  })), [mm.data])
+  const points: MapPoint[] = useMemo(() =>
+    (mm.data?.micromarkets ?? []).filter((m: any) => m.lon && m.lat).map((m: any) => ({
+      id: m.micro_market_id, name: `${m.district} · ${m.micro_market_id}`,
+      lon: m.lon, lat: m.lat, value: Number(m.tiv) || 0,
+      color: m.sonalika_share >= WON ? 'var(--good)' : 'var(--c1)',
+      sub: `${(m.sonalika_share * 100).toFixed(1)}% share · ${fmt.count(m.tiv)} TIV`,
+    })), [mm.data])
 
   return (
     <div className="grid" style={{ gap: 16 }}>
       <div className="stage-note">
-        Each archetype diagnosed as a <b>product issue</b> or a <b>sales issue</b> from its
-        product fit, market share and how many of its micro-markets are cracked. Sales-funnel
-        figures are <span className="pill pill-client">modelled · ITL pending</span>.
+        Each archetype diagnosed from three things: its product fit, our market share, and
+        how many of its micro-markets we have won. Hover any diagnosis for the rule behind it.
+        Sales-funnel figures are <span className="pill pill-client">modelled · ITL pending</span>.
       </div>
 
       <Async state={a}>{(d: any) => (
@@ -42,11 +57,36 @@ export default function ArchetypeDetails() {
           <div className="grid g3">
             {d.diagnosis.map((g: any) => (
               <Kpi key={g.diagnosis}
-                   k={<span><span style={{ color: DIAG_COLOR[g.diagnosis] }}>●</span> {g.diagnosis}</span>}
+                   k={<span><span style={{ color: DIAG_COLOR[g.diagnosis] }}>●</span> {g.diagnosis}
+                        <Info wide text={DIAG_WHY[g.diagnosis]} /></span>}
                    v={`${g.archetypes} archetypes`}
-                   s={`${fmt.units(g.demand)} demand · ${fmt.units(g.sales)} sales /yr`} />
+                   s={`${fmt.count(g.demand)} demand · ${fmt.count(g.sales)} sales /yr`} />
             ))}
           </div>
+
+          {/* With no rows the card is simply absent, and the app's own language promises four
+              buckets -- so the gap gets explained rather than left to look like a fault. */}
+          {!d.diagnosis.some((g: any) => g.diagnosis === 'Defend') && (
+            <p className="dim" style={{ fontSize: 12, marginTop: -4 }}>
+              No archetype is on <b>Defend</b>: that needs a 10% share and the strongest here
+              holds {(Math.max(...d.archetypes.map((r: any) => r.avg_sonalika_share)) * 100).toFixed(1)}%.
+              Plan's Defend bucket reads strength <i>relative</i> to the rest of the set, which
+              is why it shows Defend archetypes and this table does not.
+            </p>
+          )}
+
+          <Card title={<>{chosen ? `${chosen.base_name} · ${chosen.hp_belt}` : 'Micro-markets'}
+                <Info wide text={<>Every micro-market in the selected archetype. Green is one
+                  we have won — 10% share or better, the same bar the <b>% of MM won</b> column
+                  counts — so the green fraction of this map is that column. Bubble size is the
+                  fleet.</>} /></>}
+                note={chosen ? `${fmt.count(chosen.n_micromarkets)} micro-markets · ${(chosen.cracked_pct * 100).toFixed(0)}% won`
+                             : 'click an archetype in the table below'}>
+            <GeoMap points={points} height={360}
+                    legend={<><span><i style={{ background: 'var(--good)' }} />won (share ≥ 10%)</span>
+                             <span><i style={{ background: 'var(--c1)' }} />not won</span>
+                             <span className="muted">· bubble = tractors in the field</span></>} />
+          </Card>
 
           <div className="split">
             <Card title="Archetypes" note="click one to map it and see the diagnosis">
@@ -56,7 +96,7 @@ export default function ArchetypeDetails() {
                     <th>Archetype</th><th>Sub-zone</th><th>Diagnosis</th>
                     <th style={{ textAlign: 'right' }}>Share</th>
                     <th style={{ textAlign: 'right' }}>Fit</th>
-                    <th style={{ textAlign: 'right' }}>Cracked</th>
+                    <th style={{ textAlign: 'right' }}>% of MM won</th>
                     <th style={{ textAlign: 'right' }}>Sales</th>
                   </tr></thead>
                   <tbody>
@@ -91,13 +131,11 @@ export default function ArchetypeDetails() {
                   <div className="pb-cell"><span className="pb-k">TIV</span><span>{fmt.units(chosen.tiv)}</span></div>
                   <div className="pb-cell"><span className="pb-k">Share</span><span>{(chosen.avg_sonalika_share * 100).toFixed(1)}%</span></div>
                   <div className="pb-cell"><span className="pb-k">Product fit</span><span>{(chosen.product_fit * 100).toFixed(0)}%</span></div>
-                  <div className="pb-cell"><span className="pb-k">Cracked</span><span>{(chosen.cracked_pct * 100).toFixed(0)}% of MMs</span></div>
+                  <div className="pb-cell"><span className="pb-k">% of MM won</span><span>{(chosen.cracked_pct * 100).toFixed(0)}%</span></div>
                   <div className="pb-cell"><span className="pb-k">Activities</span><span>{fmt.units(chosen.activities_yr)}</span></div>
                   <div className="pb-cell"><span className="pb-k">Enquiries</span><span>{fmt.units(chosen.enquiries_yr)}</span></div>
                   <div className="pb-cell"><span className="pb-k">Deliveries</span><span>{fmt.units(chosen.deliveries_yr)}</span></div>
                 </div>
-                <p className="pb-k" style={{ margin: '12px 0 4px' }}>Micro-markets (colour = Sonalika sales)</p>
-                <Async state={mm}>{() => <PointMap items={items} height={280} />}</Async>
               </div>}
             </Card>
           </div>

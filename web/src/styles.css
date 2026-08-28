@@ -69,17 +69,54 @@ body {
 .nav button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
 
 .filters { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-select, input[type=text] {
+select, input:not([type]), input[type=text], input[type=number] {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: 7px; padding: 6px 9px; font-size: 13px; max-width: 260px;
 }
 select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* Bare buttons inside a card -- the Configure editor's Add/Delete controls. Scoped to
+   .card so the styled buttons elsewhere (.switch, .tabs, filters) keep their own look. */
+.card button:not([class]) {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 11px; font-size: 12px; cursor: pointer;
+}
+.card button:not([class]):hover { border-color: var(--border-strong); color: var(--text); }
 
 /* ---------- layout ---------- */
 .main { flex: 1; overflow: auto; padding: 16px 18px 40px; }
 .grid { display: grid; gap: 14px; }
 .g2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
 .g3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+/* A block-level .switch would stretch to the full width; as a flex item it sizes
+   to its buttons, which is what a segmented control should do. */
+.row-centre { justify-content: center; }
+.conf-key { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px;
+  font-size: 11px; color: var(--text-3); }
+.conf-key span { display: inline-flex; align-items: center; gap: 6px; }
+.conf-key i { font-style: normal; }
+
+/* ---------- info tooltips ---------- */
+.info { display: inline-flex; align-items: center; justify-content: center; position: relative;
+  width: 14px; height: 14px; margin-left: 6px; border-radius: 50%; cursor: help;
+  border: 1px solid var(--border-strong); color: var(--text-3);
+  font: italic 600 9.5px/1 Georgia, serif; vertical-align: middle; }
+.info:hover, .info:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+.info-tip { display: none; position: absolute; z-index: 60; top: 20px; left: 50%;
+  transform: translateX(-50%); width: 260px; padding: 9px 11px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border-strong); color: var(--text-2);
+  font: normal 400 11.5px/1.55 var(--sans, inherit); font-style: normal; text-align: left;
+  white-space: normal; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
+.info-tip.wide { width: 340px; }
+.info-tip b { color: var(--text); }
+.info:hover .info-tip, .info:focus .info-tip, .info:focus-within .info-tip { display: block; }
+/* Icons sit at the left of a tab or a card title, so a centred tip hangs off the
+   window. Open rightwards from the icon instead. */
+.subnav .info-tip, .card h3 .info-tip { left: -6px; right: auto; transform: none; }
+/* ...except the last tile in a row, which is already at the right edge. */
+.g3 > *:last-child .info-tip, .g4 > *:last-child .info-tip { left: auto; right: -6px; transform: none; }
 .split { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 14px; }
 @media (max-width: 1050px) { .split { grid-template-columns: 1fr; } }
 

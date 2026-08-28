@@ -20,6 +20,33 @@ export function Badge({ kind, children }: { kind: string; children?: React.React
   return <span className={`badge ${kind}`}>{children ?? kind}</span>
 }
 
+/**
+ * Hover/focus explainer. Put one on anything whose meaning is not obvious from its label:
+ * a tab, a table, a control. Keyboard-reachable, because a tooltip only a mouse can open
+ * is a tooltip half the room cannot read.
+ */
+/**
+ * Recharts tooltip styling. Recharts colours its label and item text near-black by default,
+ * which is invisible on this dark panel — so every tooltip has to set all three. Spread this
+ * into <Tooltip {...TIP} /> rather than restating it per chart.
+ */
+export const TIP = {
+  contentStyle: {
+    background: 'var(--panel-2)', border: '1px solid var(--border-strong)',
+    borderRadius: 6, fontSize: 12, color: 'var(--text)',
+  },
+  labelStyle: { color: 'var(--text)', fontWeight: 600, marginBottom: 2 },
+  itemStyle: { color: 'var(--text-2)' },
+}
+
+export function Info({ text, wide }: { text: React.ReactNode; wide?: boolean }) {
+  return (
+    <span className="info" tabIndex={0} role="note" aria-label="What this shows">
+      i<span className={'info-tip' + (wide ? ' wide' : '')}>{text}</span>
+    </span>
+  )
+}
+
 /** Small async data hook: keeps every panel's loading/error handling identical. */
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], enabled = true) {
   const [data, setData] = useState<T | undefined>()

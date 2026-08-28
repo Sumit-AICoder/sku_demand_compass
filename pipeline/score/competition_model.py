@@ -52,7 +52,10 @@ def build_landscape() -> pd.DataFrame:
 
     v = read_table(MARTS / "village_features.parquet")
     d = read_table(CURATED / "geo_districts.parquet").set_index("district_id")
-    cats = list(Config.sku_categories())
+    # Implement categories only: the 13 players below and their affinity weights are
+    # implement brands. Tractor competition comes from the real 6-OEM dealer footprint,
+    # not from this hand-set choice model.
+    cats = list(Config.sku_categories("implements"))
 
     state = v["district_id"].map(d["state"]).to_numpy()
     dealer_km = v["dealer_distance_km"].to_numpy()
@@ -127,7 +130,7 @@ def build_player_shares() -> pd.DataFrame:
     dist = v["dealer_distance_km"].to_numpy()[:, None] * rng.lognormal(0, .30, (len(v), len(players)))
 
     rows = []
-    for cat in Config.sku_categories():
+    for cat in Config.sku_categories("implements"):
         fit = np.array([AFFINITY[p][cat] for p in players]); fit = fit / fit.max()
         share = np.zeros((len(v), len(players)))
         for st in np.unique(state):
@@ -156,7 +159,13 @@ def build_player_shares() -> pd.DataFrame:
 def build_external_cannibalisation() -> pd.DataFrame:
     """Per village x SKU: demand at stake, who takes it, and whether it is winnable."""
     land = read_table(MARTS / "competitive_landscape.parquet")
+    # PHASE 2 BOUNDARY. village_sku_scores now carries both product lines. Everything
+    # below this point still rolls up to a single un-keyed "demand" number, so summing
+    # the two here would add a 7-lakh tractor to a 42k cultivator and call it units.
+    # Scoped to implements until each rollup gains product_line as a group key --
+    # which keeps every number on screen today exactly what it was.
     scores = read_table(MARTS / "village_sku_scores.parquet")
+    scores = scores[scores["product_line"] == "implements"]
 
     L = land.set_index(["village_id", "category"])
     idx = pd.MultiIndex.from_arrays([scores["village_id"], scores["category"]])

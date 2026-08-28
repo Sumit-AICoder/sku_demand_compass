@@ -58,7 +58,13 @@ def build(seed: int = 20260822) -> pd.DataFrame:
     d = read_table(CURATED / "geo_districts.parquet").set_index("district_id")
     L = read_table(CURATED / "village_layers.parquet").set_index("village_id").loc[v["village_id"]]
     A = read_table(CURATED / "village_assets.parquet").set_index("village_id").loc[v["village_id"]]
+    # PHASE 2 BOUNDARY. village_sku_scores now carries both product lines. Everything
+    # below this point still rolls up to a single un-keyed "demand" number, so summing
+    # the two here would add a 7-lakh tractor to a 42k cultivator and call it units.
+    # Scoped to implements until each rollup gains product_line as a group key --
+    # which keeps every number on screen today exactly what it was.
     S = read_table(CURATED / "village_sku_state.parquet")
+    S = S[S["product_line"] == "implements"]
     series = read_table(CURATED / "district_series.parquet")
 
     f = pd.DataFrame({"village_id": v["village_id"].to_numpy(),

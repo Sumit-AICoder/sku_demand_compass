@@ -57,14 +57,32 @@ ACTION_RULES = {
 
 
 def build(seed: int = 20260822) -> pd.DataFrame:
+    """Village insights for every product line.
+
+    The action segment is "is there unserved demand here, and is a dealer close enough" --
+    and the first half of that differs by line, because a village can be saturated with
+    implements and short of tractor capacity at the same time. So the table carries one row
+    per village PER LINE, and the medians that split high/low headroom are taken within a
+    line rather than across both.
+    """
+    tot_all = read_table(MARTS / "village_totals.parquet")
+    out = []
+    for line, tot in tot_all.groupby("product_line"):
+        LOG.info("village insights: %s", line)
+        out.append(_one_line(tot, seed).assign(product_line=line))
+    both = pd.concat(out, ignore_index=True)
+    write_table(both, MARTS / "village_insights.parquet")
+    return both
+
+
+def _one_line(tot: pd.DataFrame, seed: int = 20260822) -> pd.DataFrame:
     from sklearn.cluster import KMeans
 
     f = read_table(MARTS / "village_features.parquet")
     c = read_table(MARTS / "village_clusters.parquet")[
         ["village_id", "cluster_spatial", "archetype"]]
-    tot = read_table(MARTS / "village_totals.parquet")[
-        ["village_id", "potential_units_yr", "potential_value_inr",
-         "headroom", "addressable", "owned", "top_sku", "top_category"]]
+    tot = tot[["village_id", "potential_units_yr", "potential_value_inr",
+               "headroom", "addressable", "owned", "top_sku", "top_category"]]
     geo = read_table(CURATED / "geo_villages.parquet")[
         ["village_id", "village", "block_id", "district_id", "district", "state"]] \
         if "district" in read_table(CURATED / "geo_villages.parquet").columns else None
@@ -161,7 +179,6 @@ def build(seed: int = 20260822) -> pd.DataFrame:
                  villages=("village_id", "size"),
                  units=("potential_units_yr", "sum"),
                  headroom=("headroom", "sum")).round(0).to_string())
-    write_table(out, MARTS / "village_insights.parquet")
     _micro_profiles(d)
     return out
 

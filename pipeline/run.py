@@ -20,7 +20,7 @@ LOG = log("run")
 # micromarkets reads village_totals (export) + competitive_landscape (compete) + agroclimate,
 # and rewrites the segmentation that insights consumes -- so it runs after compete, before
 # insights. Demand scoring does not need the new labels (they are display-only).
-STAGES = ["geo", "ingest", "assets", "competition", "sku", "features", "agroclimate",
+STAGES = ["geo", "ingest", "aesr", "assets", "competition", "sku", "features", "agroclimate",
           "ucm", "cluster", "factors", "score", "export", "compete", "micromarkets",
           "operations", "archetype_sales", "archetype_ucm", "insights", "shapes",
           "dealers", "subsidy"]
@@ -41,6 +41,13 @@ def stage_ingest():
     sp = _spine()
     village_layers.build(sp)
     district_series.build(sp)
+
+
+def stage_aesr():
+    """Real soil, climate and growing period per agro-ecological sub-region, and the
+    district each one contains -- the Define panel's only real soil source."""
+    from pipeline.ingest import aesr
+    aesr.build()
 
 
 def stage_assets():

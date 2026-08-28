@@ -13,17 +13,23 @@ cd "$(dirname "$0")"
 API_PORT=8000
 WEB_PORT=5273
 
-if [ ! -d .venv ]; then
-  echo "==> creating .venv"
-  python3 -m venv .venv
+# The virtualenv lives OUTSIDE the repo on purpose. This project sits in an iCloud-synced
+# Documents folder, and iCloud will not memory-map a synced .so -- pandas, scipy and sklearn
+# all fail with `mmap ... errno=60` from a .venv in here. Keeping it on local disk is the
+# difference between the pipeline running and not running at all.
+VENV="${SKU_VENV:-$HOME/.venvs/sku-demand-compass}"
+
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "==> creating the virtualenv at $VENV (outside the synced folder)"
+  python3 -m venv "$VENV"
 fi
 
 # Reinstall only when requirements.txt is newer than the last successful install.
-if [ ! -f .venv/.deps-ok ] || [ requirements.txt -nt .venv/.deps-ok ]; then
+if [ ! -f "$VENV/.deps-ok" ] || [ requirements.txt -nt "$VENV/.deps-ok" ]; then
   echo "==> installing Python dependencies (a minute or two the first time)"
-  .venv/bin/pip install -q --upgrade pip
-  .venv/bin/pip install -q -r requirements.txt
-  touch .venv/.deps-ok
+  "$VENV/bin/pip" install -q --upgrade pip
+  "$VENV/bin/pip" install -q -r requirements.txt
+  touch "$VENV/.deps-ok"
 fi
 
 if [ ! -d web/node_modules ]; then
@@ -37,9 +43,9 @@ if [ ! -f data/marts/village_totals.parquet ]; then
   echo "!!  data/marts is empty. The dashboard will load but every panel will be blank."
   read -r -p "    Build it now with the full pipeline (~60s)? [y/N] " reply
   if [[ "$reply" =~ ^[Yy]$ ]]; then
-    .venv/bin/python -m pipeline.run
+    "$VENV/bin/python" -m pipeline.run
   else
-    echo "    Skipped. Run '.venv/bin/python -m pipeline.run' when you want the data."
+    echo "    Skipped. Run '$VENV/bin/python -m pipeline.run' when you want the data."
   fi
 fi
 
@@ -48,7 +54,7 @@ fi
 # down and nothing else.
 trap 'kill 0' EXIT
 
-.venv/bin/python -m uvicorn api.main:app --port "$API_PORT" --reload &
+"$VENV/bin/python" -m uvicorn api.main:app --port "$API_PORT" --reload --reload-dir api --reload-dir pipeline/cluster &
 (cd web && npm run dev -- --port "$WEB_PORT") &
 
 cat <<BANNER

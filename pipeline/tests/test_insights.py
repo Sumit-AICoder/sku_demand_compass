@@ -12,7 +12,11 @@ pytestmark = pytest.mark.filterwarnings("ignore")
 
 @pytest.fixture(scope="module")
 def ins():
-    return read_table(MARTS / "village_insights.parquet")
+    # Implements only: these marts carry both product lines now, and every figure
+    # asserted below is an implements one. A tractor row summed into them would make
+    # the assertion wrong in a way that still looks like a plausible number.
+    d = read_table(MARTS / "village_insights.parquet")
+    return d[d["product_line"] == "implements"]
 
 
 @pytest.fixture(scope="module")
@@ -23,7 +27,11 @@ def micro():
 # ---------------------------------------------------------------- granularity
 
 def test_every_village_gets_an_insight(ins):
+    # Implements only: these marts carry both product lines now, and every figure
+    # asserted below is an implements one. A tractor row summed into them would make
+    # the assertion wrong in a way that still looks like a plausible number.
     tot = read_table(MARTS / "village_totals.parquet")
+    tot = tot[tot["product_line"] == "implements"]
     assert len(ins) == len(tot)
     assert ins["village_id"].is_unique
 
@@ -304,13 +312,26 @@ def test_queries_are_thread_safe():
 
 
 def test_connection_is_per_thread():
-    """Two threads must not be handed the same connection object."""
+    """Two threads must not be handed the same connection object.
+
+    The barrier is what makes this deterministic: `con()` is fast enough that a pool can
+    finish all eight tasks on one worker before the others are scheduled, and the test then
+    fails for a scheduling reason rather than a threading one. Holding every task until all
+    four have started guarantees four real threads ask for a connection.
+    """
     import concurrent.futures as cf
+    import threading
     from api.main import con
 
+    started = threading.Barrier(4, timeout=10)
+
+    def take(_):
+        started.wait()
+        return id(con())
+
     with cf.ThreadPoolExecutor(max_workers=4) as ex:
-        ids = list(ex.map(lambda _: id(con()), range(8)))
-    assert len(set(ids)) > 1, "all threads share one connection"
+        ids = list(ex.map(take, range(4)))
+    assert len(set(ids)) == 4, "threads are sharing a connection"
 
 
 def test_seasonality_covers_every_sku_and_month(q):

@@ -40,6 +40,7 @@ class FitResult:
     decomposition: pd.DataFrame | None = None
     betas: pd.DataFrame | None = None
     diagnostics: dict | None = None
+    forecast: pd.DataFrame | None = None
 
 
 def _fit_one(args) -> FitResult:
@@ -195,7 +196,47 @@ def _fit_one(args) -> FitResult:
         "sign_ok": sign_ok,
         "usable": sig & sign_ok & diagnostics["usable_for_weights"],
     })
-    return FitResult(district_id, True, "", dec, betas, diagnostics)
+
+    # ---- forward forecast ---------------------------------------------------
+    # The fit already exists, so forecasting from it costs nothing -- and without it the
+    # app has no forward-looking number anywhere. Future exog is each regressor's own
+    # calendar-month mean over the last three years: "a normal year from here", so the
+    # line is the structural path and the scenario shocks are what bend it.
+    h = int(cfg.get("forecast", {}).get("horizon_months", 6))
+    fc = None
+    try:
+        last = pd.Period(str(months[-1]), freq="M")
+        fut = [last + i for i in range(1, h + 1)]
+        recent = X.tail(36)
+        rec_month = np.array([pd.Period(str(m), freq="M").month for m in months[-len(recent):]])
+        Xf = np.array([[_month_mean(recent[c].to_numpy(float), rec_month, p.month)
+                        for c in reg_names] for p in fut], dtype=float)
+        f = res.get_forecast(steps=h, exog=Xf)
+        ci = np.asarray(f.conf_int(alpha=0.10), dtype=float)   # 90%, matching the app
+        fc = pd.DataFrame({
+            "district_id": district_id,
+            "month": [str(p) for p in fut],
+            "forecast": np.exp(np.asarray(f.predicted_mean, dtype=float)),
+            "lo": np.exp(ci[:, 0]),
+            "hi": np.exp(ci[:, 1]),
+        })
+        for j, nm in enumerate(reg_names):
+            fc[f"contrib_{nm}"] = Xf[:, j] * beta[j]
+    except Exception:                                           # noqa: BLE001
+        pass                                                    # a district without a
+        # forecast simply drops out of the mart; the decomposition it produced still ships.
+
+    return FitResult(district_id, True, "", dec, betas, diagnostics, fc)
+
+
+def _month_mean(values: np.ndarray, month_of: np.ndarray, month: int) -> float:
+    """Mean of a regressor in one calendar month, falling back to its overall mean."""
+    sel = values[month_of == month]
+    sel = sel[np.isfinite(sel)]
+    if len(sel):
+        return float(sel.mean())
+    finite = values[np.isfinite(values)]
+    return float(finite.mean()) if len(finite) else 0.0
 
 
 # ------------------------------------------------------------------ driver
@@ -244,7 +285,20 @@ def fit_all(series: pd.DataFrame | None = None, n_jobs: int | None = None) -> di
     write_table(dec, MARTS / "ucm_decomposition.parquet")
     write_table(betas, MARTS / "ucm_betas.parquet")
     write_table(diags, MARTS / "ucm_diagnostics.parquet")
-    return {"decomposition": dec, "betas": betas, "diagnostics": diags}
+
+    fcs = [r.forecast for r in ok if r.forecast is not None]
+    out = {"decomposition": dec, "betas": betas, "diagnostics": diags}
+    if fcs:
+        fc = pd.concat(fcs, ignore_index=True)
+        fc["provenance"] = "allocated"
+        LOG.info("forecast: %d districts x %d months (%s -> %s)",
+                 fc["district_id"].nunique(), fc["month"].nunique(),
+                 fc["month"].min(), fc["month"].max())
+        write_table(fc, MARTS / "ucm_forecast.parquet")
+        out["forecast"] = fc
+    else:
+        LOG.warning("no district produced a forecast -- the Plan forecast screen will be empty")
+    return out
 
 
 def _vif_report(series: pd.DataFrame, reg_names: list[str], cfg: dict) -> None:

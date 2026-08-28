@@ -41,6 +41,49 @@ def hp_band_overlap(sku: dict) -> np.ndarray:
     return np.asarray(out)
 
 
+def _tractor_addressable(sku: dict, base_fleet, size_fit, crop_fit,
+                         ticket, approval, credit, cfg):
+    """How many tractors of this band a village could sustain, and how many it already has.
+
+    An implement attaches to a tractor that exists; a tractor attaches to nothing, so
+    `fleet_in_band x attach_rate_ceiling` has no analogue. The ceiling here is how much
+    further this band can mechanise:
+
+        addressable = owned x (1 + growth_ceiling x fit x afford)
+        owned       = the village's ACTUAL fleet in this band
+
+    `growth_ceiling` is per band in the catalogue, because the bands are not going the same
+    way: the sub-35 HP market is flat, 35-45 is the volume band, and power is shifting
+    upward, so the big bands have the most room. Spreading it by fit and affordability is
+    what makes one village differ from another.
+
+    Two earlier attempts are worth not repeating. Absolute per-1000-ha saturation constants
+    sat *below* the fleet already on the ground, so every village floored at zero headroom
+    and the line showed replacement demand only. Reading the ceiling off a peer percentile
+    then over-corrected: the fleet mix is continuous, so the skew in the top band implied
+    the 60 HP+ market could triple.
+
+    `afford` treats a tractor as the financed purchase it is -- an annual affordable ticket
+    times the loan tenor, gated by approval odds and credit depth -- rather than something
+    bought out of one season's surplus.
+    """
+    tenor = float(cfg.get("finance_tenor_years", 5))
+    afford = np.clip(ticket * tenor / max(float(sku["price_inr"]), 1.0), 0, 1.25) \
+        * np.clip(0.55 + 0.45 * approval, 0, 1.0) \
+        * np.clip(0.70 + 0.30 * credit, 0, 1.0)
+
+    owned = base_fleet
+    spread = np.clip(size_fit * crop_fit * afford, 0, None)
+    # Normalise by the FLEET-weighted mean, not the plain mean: villages with the most
+    # tractors in a band also tend to fit it best, and dividing by the plain mean let that
+    # correlation push realised headroom well past the ceiling the catalogue states. This
+    # way `growth_ceiling: 0.35` really does mean "this band can grow 35%".
+    w = float((spread * owned).sum())
+    spread = spread * (float(owned.sum()) / w) if w > 0 else spread
+    room = float(sku["growth_ceiling"]) * np.clip(spread, 0, 3.0)
+    return owned * (1.0 + room), owned
+
+
 def build(spine, layers, assets, seed=20260822):
     rng = np.random.default_rng(seed + 41)
     v = spine["villages"].reset_index(drop=True)
@@ -67,6 +110,10 @@ def build(spine, layers, assets, seed=20260822):
     residue = L["residue_burden_t"].to_numpy()
     residue_idx = np.clip(residue / max(np.percentile(residue, 90), 1e-6), 0, 1.5)
 
+    ticket = A["affordable_ticket_inr"].to_numpy()
+    approval = A["approval_rate"].to_numpy()
+    credit = np.clip(A["credit_depth"].to_numpy(), 0, 1)
+
     rows = []
     for sku in Config.skus():
         band = hp_band_overlap(sku)
@@ -81,20 +128,26 @@ def build(spine, layers, assets, seed=20260822):
         if sku.get("requires_residue"):
             gate *= np.clip(residue_idx, 0, 1.3)
 
-        addressable = base_fleet * size_fit * crop_fit * sku["attach_rate_ceiling"] * gate
+        if sku["product_line"] == "tractors":
+            addressable, owned = _tractor_addressable(
+                sku, base_fleet, size_fit, crop_fit, ticket, approval, credit,
+                Config.sim().get("tractor_demand", {}))
+        else:
+            addressable = base_fleet * size_fit * crop_fit * sku["attach_rate_ceiling"] * gate
 
-        # Owned units: addressable served so far, discounted by how mature the
-        # category is and how much of it custom hiring absorbs.
-        maturity = {"mature": 0.80, "growth": 0.52, "policy_led": 0.34,
-                    "emerging": 0.20, "premium": 0.26, "rental_led": 0.30}[sku["maturity"]]
-        chc_absorb = 1.0 - sku["rental_substitutable"] * A["chc_density"].to_numpy() / 0.12 * 0.35
-        owned = addressable * adopt * maturity * np.clip(chc_absorb, 0.45, 1.0) \
-            * rng.lognormal(0, 0.18, len(v))
-        owned = np.minimum(owned, addressable * 0.95)
+            # Owned units: addressable served so far, discounted by how mature the
+            # category is and how much of it custom hiring absorbs.
+            maturity = {"mature": 0.80, "growth": 0.52, "policy_led": 0.34,
+                        "emerging": 0.20, "premium": 0.26, "rental_led": 0.30}[sku["maturity"]]
+            chc_absorb = 1.0 - sku["rental_substitutable"] * A["chc_density"].to_numpy() / 0.12 * 0.35
+            owned = addressable * adopt * maturity * np.clip(chc_absorb, 0.45, 1.0) \
+                * rng.lognormal(0, 0.18, len(v))
+            owned = np.minimum(owned, addressable * 0.95)
 
         rows.append(pd.DataFrame({
             "village_id": v["village_id"].to_numpy(),
             "sku_id": sku["id"],
+            "product_line": sku["product_line"],
             "category": sku["category"],
             "fleet_in_band": base_fleet,
             "size_fit": size_fit,
@@ -154,6 +207,7 @@ def _monthly_history(state, villages, districts, seed):
         out.append(pd.DataFrame({
             "district_id": np.repeat(sub["district_id"].to_numpy(), len(months)),
             "sku_id": sku["id"],
+            "product_line": sku["product_line"],
             "category": sku["category"],
             "month": np.tile(months.astype(str), len(sub)),
             "units": np.round(units.ravel(), 2),

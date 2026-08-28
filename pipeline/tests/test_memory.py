@@ -204,11 +204,15 @@ def test_unknown_product_lists_the_real_ones(q):
     assert "error" in out and out["valid_products"]
 
 
-def test_advertised_categories_match_the_catalogue(q):
-    """The schema enum must not drift from the SKU catalogue."""
+def test_advertised_categories_cover_both_product_lines(q):
+    """The chat used to restate the nine implement categories in its own constant, so adding
+    tractors left it advertising a catalogue the marts no longer matched. It now reads the
+    catalogues, and this checks the thing that actually matters: both lines are offerable."""
     from api.chat import VALID_CATEGORIES
     from pipeline.common import Config
     assert VALID_CATEGORIES == set(Config.sku_categories())
+    assert set(Config.sku_categories("implements")) < VALID_CATEGORIES
+    assert set(Config.sku_categories("tractors")) < VALID_CATEGORIES
 
 
 # ---------------------------------------------------------------- presentation

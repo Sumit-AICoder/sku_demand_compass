@@ -13,6 +13,13 @@ market:
   sonalika_implement_share: 0.062   # plausible Sonalika share of the implement market
   months_history: 60
 
+# ------------------------------------------------------- tractor demand (product line 2)
+tractor_demand:
+  # A tractor is financed, not paid for out of one season's surplus. affordable_ticket_inr
+  # is an annual figure, so this is what turns it into purchasing power.
+  finance_tenor_years: 5
+  # Per-band growth ceilings live in tractor_catalog.yaml next to the band they bound.
+
 # --------------------------------------------------------------- tractor base
 tractor_base:
   # Tractors per 1,000 ha net sown area, by mechanisation tier. Punjab sits far above

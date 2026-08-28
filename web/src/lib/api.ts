@@ -1,7 +1,16 @@
+import { useStore } from './store'
+
 const BASE = '/api'
 
+/**
+ * Every GET carries the product line. Injected here rather than at each of the ~40 call
+ * sites: an endpoint that is not line-aware ignores the extra query param, and one that is
+ * cannot be called without it by mistake. Explicit `product` in params still wins, for the
+ * two screens that show both lines side by side.
+ */
 async function get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
   const qs = new URLSearchParams()
+  qs.set('product', useStore.getState().productLine)
   Object.entries(params ?? {}).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== '') qs.set(k, String(v))
   })
@@ -18,6 +27,16 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
   if (!r.ok) throw new Error(`${r.status} ${path}`)
+  return r.json()
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => path)}`)
   return r.json()
 }
 
@@ -76,8 +95,9 @@ export const api = {
   reviewMicromarkets: (p: { district?: string; archetype_id?: string; metric?: string; limit?: number }) =>
     get<{ metric: string; micromarkets: any[] }>('/review/micromarkets', p),
   reviewMicromarket: (id: string) => get<{ micromarket: any }>(`/review/micromarket/${id}`),
+  reviewProfile: (level: string, id: string) => get<any>('/review/profile', { level, id }),
   reviewArchetypes: () => get<{ archetypes: any[]; diagnosis: any[]; totals: any }>('/review/archetypes'),
-  reviewCoverage: (product: string, type: string) => get<{ product_line: string; type: string; provenance: string; own_dealers: number; competitor_dealers: number; archetypes: any[]; oems: any[] }>('/review/coverage', { product, type }),
+  reviewCoverage: (product: string, type: string) => get<{ product_line: string; type: string; provenance: Record<string, string>; own_dealers: number; competitor_dealers: number; covered_states: string[]; districts: any[]; archetypes: any[]; oems: any[] }>('/review/coverage', { product, type }),
   archetypeUcmDecomposition: (archetype_id: string) => get<{ archetype_id: string; provenance: string; series: any[]; diagnostics: any }>('/archetype-ucm/decomposition', { archetype_id }),
   archetypeUcmElasticities: (archetype_id?: string) => get<any[]>('/archetype-ucm/elasticities', { archetype_id }),
   archetypeUcmDiagnostics: () => get<{ archetypes: any[] }>('/archetype-ucm/diagnostics'),
@@ -88,16 +108,28 @@ export const api = {
   micromarkets: (p: { district?: string; archetype?: string; hp_belt?: string; metric?: string; limit?: number }) =>
     get<{ metric: string; micromarkets: any[] }>('/micromarkets', p),
   micromarketDetail: (id: string) => get<{ micromarket: any; villages: any[] }>(`/micromarket/${id}`),
-  configureArchetype: (rule: unknown) => post<{ new_archetype: string; moved_micromarkets: number; n_archetypes: number; custom_count: number; archetypes: any[] }>('/archetypes/configure', rule),
-  resetArchetypes: () => post<{ n_archetypes: number; custom_count: number }>('/archetypes/reset', {}),
+  defineProfile: (level: string, id: string) => get<any>('/define/profile', { level, id }),
+  taxonomy: () => get<any>('/taxonomy'),
+  saveTaxonomy: (tax: unknown) => put<any>('/taxonomy', tax),
+  resetTaxonomy: () => post<any>('/taxonomy/reset', {}),
   subsidy: (state?: string) => get<{ rows: any[] }>('/subsidy', { state }),
   planPriorities: (state: string, product: string) => get<{ state: string; skus: any[] }>('/plan/priorities', { state, product }),
   planDistricts: () => get<{ provenance: string; districts: any[] }>('/plan/districts'),
+  planBuckets: (p: { product?: string; fit_min?: number; mode?: string; defend_pct?: number }) =>
+    get<{ rule: any; totals: any[]; archetypes: any[] }>('/plan/buckets', p),
+  planBucketMicromarkets: (archetype_id: string, limit = 400) =>
+    get<{ archetype_id: string; micromarkets: any[] }>(`/plan/bucket/${archetype_id}/micromarkets`, { limit }),
+  planTargets: (p: { archetype_id: string; target_units?: number }) => get<any>('/plan/targets', p),
+  planForecast: (body: unknown) => post<any>('/plan/forecast', body),
+  actSummary: (archetype_id: string) => get<any>('/act/summary', { archetype_id }),
+  actPlaybook: (body: unknown) => post<any>('/act/playbook', body),
 }
 
 export const fmt = {
   units: (n: number | null | undefined) =>
     n == null ? '—' : n >= 1000 ? Math.round(n).toLocaleString('en-IN') : n.toFixed(1),
+  count: (n: number | null | undefined) =>
+    n == null ? '—' : Math.round(n).toLocaleString('en-IN'),
   cr: (n: number | null | undefined) =>
     n == null ? '—' : `₹${(n / 1e7).toFixed(n / 1e7 >= 100 ? 0 : 1)} cr`,
   pct: (n: number | null | undefined, d = 1) => (n == null ? '—' : `${n.toFixed(d)}%`),

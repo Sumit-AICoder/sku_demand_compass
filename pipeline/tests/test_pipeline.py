@@ -262,8 +262,12 @@ def test_face_validity_regional_leaders(scores, villages, sku, expected_state):
 
 
 def test_trolley_is_the_highest_volume_sku(scores):
-    """Haulage is near-universal: 'often bundled with tractor ownership' (Excel)."""
-    top = scores.groupby("sku_id")["potential_units_yr"].sum().idxmax()
+    """Haulage is near-universal: 'often bundled with tractor ownership' (Excel).
+
+    Scoped to implements: the scores mart carries both product lines now, and a tractor HP
+    band outsells any single implement, which says nothing about haulage."""
+    impl = scores[scores["product_line"] == "implements"]
+    top = impl.groupby("sku_id")["potential_units_yr"].sum().idxmax()
     assert top.startswith("TROLLEY")
 
 
@@ -285,12 +289,24 @@ def test_score_monotonicity_for_tractor_driven_sku():
 # ---------------------------------------------------------------- 10. reconciliation
 
 def test_levels_reconcile(scores):
-    """A parent's total must equal the sum of its children's -- at every level."""
-    vt = read_table(MARTS / "village_totals.parquet")
-    bt = read_table(MARTS / "block_totals.parquet")
-    dt = read_table(MARTS / "district_totals.parquet")
+    """A parent's total must equal the sum of its children's -- at every level.
 
-    assert np.isclose(vt["potential_units_yr"].sum(), scores["potential_units_yr"].sum(), rtol=1e-6)
+    The totals marts are implements-only while the rollups gain their product_line key, so
+    the comparison is scoped the same way. When they do gain it, this test should compare
+    per line -- a totals table that has lost the key would otherwise reconcile happily
+    against a sum of tractors and cultivators added together."""
+    # Implements only: these marts carry both product lines now, and every figure
+    # asserted below is an implements one. A tractor row summed into them would make
+    # the assertion wrong in a way that still looks like a plausible number.
+    vt = read_table(MARTS / "village_totals.parquet")
+    vt = vt[vt["product_line"] == "implements"]
+    bt = read_table(MARTS / "block_totals.parquet")
+    bt = bt[bt["product_line"] == "implements"]
+    dt = read_table(MARTS / "district_totals.parquet")
+    dt = dt[dt["product_line"] == "implements"]
+    impl = scores[scores["product_line"] == "implements"]
+
+    assert np.isclose(vt["potential_units_yr"].sum(), impl["potential_units_yr"].sum(), rtol=1e-6)
     assert np.isclose(bt["potential_units_yr"].sum(), vt["potential_units_yr"].sum(), rtol=1e-6)
     assert np.isclose(dt["potential_units_yr"].sum(), bt["potential_units_yr"].sum(), rtol=1e-6)
 

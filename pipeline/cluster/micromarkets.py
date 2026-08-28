@@ -101,7 +101,11 @@ def build(seed: int = 20260827) -> None:
 
     vf = read_table(MARTS / "village_features.parquet")
     va = read_table(CURATED / "village_assets.parquet")
-    vt = read_table(MARTS / "village_totals.parquet")[
+    # Implements only, deliberately. micromarkets.parquet describes the FLEET and its
+    # segmentation; the demand columns it carries are the implement ones the Define screens
+    # already show. Per-line demand lives in village_totals and is read from there.
+    vt = read_table(MARTS / "village_totals.parquet")
+    vt = vt[vt["product_line"] == "implements"][
         ["village_id", "potential_units_yr", "potential_value_inr", "addressable"]]
     ac = read_table(MARTS / "agroclimate.parquet")
     cl = read_table(MARTS / "competitive_landscape.parquet")
@@ -115,15 +119,26 @@ def build(seed: int = 20260827) -> None:
          .merge(share, on="village_id", how="left"))
     v["sonalika_share"] = v["sonalika_share"].fillna(v["sonalika_share"].median())
 
-    # ---- micro-markets: cluster each district -------------------------------
+    # ---- micro-markets: cluster within a sub-zone, district by district ------
+    # The agro-climatic unit a micro-market belongs to is the NARP SUB-ZONE -- finer than
+    # the zone the archetypes key on, which is the point: local grouping, broad archetype.
+    # Districts nest wholly inside one sub-zone, so partitioning by district as well costs
+    # nothing agronomically and keeps `micro_market_id` district-addressable, which every
+    # downstream district join (dealers, forecast weights, competitor roll-up) relies on.
+    from pipeline.cluster import narp
+    v["subzone_id"] = v["district_id"].map(
+        read_table(CURATED / "geo_districts.parquet")
+        .set_index("district_id")["district"].map(narp.subzone_of))
     mm_labels = np.empty(len(v), dtype=object)
-    for did, idx in v.groupby("district_id").groups.items():
+    for (sz, did), idx in v.groupby(["subzone_id", "district_id"]).groups.items():
         g = v.loc[idx]
         lab = _cluster_district(g, rng)
         mm_labels[[v.index.get_loc(i) for i in idx]] = [f"{did}M{l:04d}" for l in lab]
     v["micro_market_id"] = mm_labels
-    LOG.info("micro-markets: %d villages -> %d micro-markets (%.1f villages each)",
-             len(v), v["micro_market_id"].nunique(), len(v) / v["micro_market_id"].nunique())
+    LOG.info("micro-markets: %d villages -> %d micro-markets (%.1f each) "
+             "within %d sub-zones / %d districts",
+             len(v), v["micro_market_id"].nunique(), len(v) / v["micro_market_id"].nunique(),
+             v["subzone_id"].nunique(), v["district_id"].nunique())
 
     # ---- aggregate villages -> micro-market ---------------------------------
     def wmean(x, w):
@@ -132,7 +147,11 @@ def build(seed: int = 20260827) -> None:
 
     rows = []
     for mm, g in v.groupby("micro_market_id"):
-        w = g.set_index("village_id")["potential_units_yr"]
+        # Weighted by the FLEET, not by demand. mean_hp feeds hp_belt, which is one of the
+        # three archetype axes -- so weighting it by implement demand made the segmentation a
+        # function of the product line, and adding tractors would have silently redrawn every
+        # archetype. TIV is what the archetype rollup already weights by (see _summarise).
+        w = g.set_index("village_id")["tractors"]
         band_sum = {c: float(g[c].sum()) for c in hp_cols}
         mm_mean_hp = wmean(g.set_index("village_id")["mean_hp"], w)
         rows.append({
@@ -157,8 +176,7 @@ def build(seed: int = 20260827) -> None:
     for c in ["mean_temp", "rain_normal_mm"] + REAL_CROPS:
         mm[c] = pd.to_numeric(mm[c], errors="coerce").fillna(mm[c].median())
 
-    # ---- agro-climatic axis = NARP sub-zone (per district) ------------------
-    from pipeline.cluster import narp
+    # ---- agro-climatic axis: the sub-zone each micro-market was clustered in -
     mm["subzone_id"] = mm["district"].map(narp.subzone_of)
     unmapped = mm[mm["subzone_id"] == ""]["district"].unique()
     if len(unmapped):
@@ -172,36 +190,25 @@ def build(seed: int = 20260827) -> None:
     chk = mm.groupby(["subzone_id", "lgp"])["rain_normal_mm"].mean().round().reset_index()
     LOG.info("NARP sub-zone rainfall cross-check (mm):\n%s", chk.to_string(index=False))
 
-    # ---- TIV tier (the second archetype factor) -----------------------------
+    # ---- archetype = ZONE x TIV tier x HP belt ------------------------------
+    # All three categories come from config/taxonomy.yaml through one assign() call, which
+    # the API also runs against a user-edited copy -- that is what lets Configure re-label
+    # 23,389 micro-markets in about a second instead of re-running this pipeline.
+    #
+    # The archetype keys on ZONE, not sub-zone: the client thinks in zones, and sub-zone
+    # granularity split the 47 real groupings into 53 thinner ones. The sub-zone survives as
+    # the geography a micro-market is clustered inside (see _cluster_district's caller).
+    from pipeline.cluster import taxonomy as tx
+    tax = tx.load()
+    problems = tx.validate(tax)
+    if problems:
+        raise RuntimeError(f"taxonomy.yaml is unusable: {problems}")
     mm["base_segment"] = pd.Categorical(mm["subzone_id"]).codes
-    # TIV tier split at the median so the cross-product stays near the client's ~50-archetype
-    # scale (15 sub-zones x 2 TIV tiers x HP belts) rather than exploding into sparse cells.
-    mm["tiv_tier"] = pd.qcut(mm["tiv"].rank(method="first"), 2,
-                             labels=["Low", "High"]).astype(str)
+    mm = tx.assign(mm, tax)
+    LOG.info("taxonomy: %s -> %d archetypes", tx.describe(tax), mm["archetype_id"].nunique())
+    LOG.info("TIV tiers: %s", mm["tiv_tier"].value_counts().to_dict())
+    LOG.info("zone crops: %s", mm.drop_duplicates("zone").set_index("zone")["crop_label"].to_dict())
 
-    # Name each sub-zone by its DISTINCTIVE crop (z-scored across sub-zones, so cotton /
-    # soybean surface despite DES being foodgrain-weighted). The sub-zone still divides the
-    # archetypes geographically (it stays a column); the NAME is the crop + TIV descriptor
-    # the client preferred, e.g. "Wheat High-TIV".
-    crop_label = {"crop_wheat_share": "Wheat", "crop_rice_share": "Rice",
-                  "crop_cotton_share": "Cotton", "crop_soybean_share": "Soybean",
-                  "crop_sugarcane_share": "Sugarcane"}
-    sz = mm.groupby("subzone_id")[REAL_CROPS].mean()
-    szz = (sz - sz.mean()) / sz.std(ddof=0).replace(0, 1.0)
-    subzone_crop = {}
-    for sid, row in szz.iterrows():
-        top = row.sort_values(ascending=False)
-        picks = [crop_label[c] for c in top.index if top[c] > 0.3][:2]
-        subzone_crop[sid] = "-".join(picks) if picks else crop_label[top.index[0]]
-    mm["crop_label"] = mm["subzone_id"].map(subzone_crop).fillna("Mixed")
-    mm["base_name"] = mm["crop_label"] + " " + mm["tiv_tier"] + "-TIV"
-    LOG.info("sub-zone dominant crops: %s",
-             {sid: subzone_crop[sid] for sid in sorted(subzone_crop)})
-
-    # ---- archetype = sub-zone x TIV tier x HP belt --------------------------
-    mm["archetype"] = mm["base_name"] + " · " + mm["hp_belt"]
-    mm["archetype_id"] = (mm["subzone_id"] + "|" + mm["tiv_tier"].str[0]
-                          + "|" + mm["hp_belt"].str.replace(r"\D", "", regex=True))
     mm["provenance"] = "allocated"
     write_table(mm, MARTS / "micromarkets.parquet")
 
@@ -236,6 +243,11 @@ def _summarise(mm: pd.DataFrame) -> pd.DataFrame:
             "zone": g["zone"].iloc[0], "zone_name": g["zone_name"].iloc[0],
             "subzone_id": g["subzone_id"].iloc[0], "subzone": g["subzone"].iloc[0],
             "lgp": g["lgp"].iloc[0], "tiv_tier": g["tiv_tier"].iloc[0],
+            # the true modal crop of the member micro-markets, not the zone's label --
+            # this is the column the Archetypes table shows
+            "dominant_crop": (g["dominant_crop"].mode().iloc[0]
+                              if len(g["dominant_crop"].mode()) else ""),
+            "subzones": ", ".join(sorted(g["subzone_id"].dropna().unique())),
             "n_micromarkets": int(len(g)), "n_villages": int(g["n_villages"].sum()),
             "tiv": round(float(g["tiv"].sum())),
             "avg_sonalika_share": round(float((g["sonalika_share"] * g["tiv"]).sum()
@@ -251,9 +263,10 @@ def _summarise(mm: pd.DataFrame) -> pd.DataFrame:
             "provenance": "allocated",
         })
     out = pd.DataFrame(rows).sort_values("potential_units_yr", ascending=False)
-    out["definition"] = ("Zone " + out["subzone_id"] + " " + out["subzone"]
-                         + " (LGP " + out["lgp"] + "d)  ·  " + out["tiv_tier"] + " TIV  ·  "
-                         + out["hp_belt"] + "  ·  " + out["n_micromarkets"].astype(str) + " micro-markets")
+    out["definition"] = ("Zone " + out["zone"] + " " + out["zone_name"]
+                         + "  ·  " + out["tiv_tier"] + " TIV  ·  " + out["hp_belt"]
+                         + "  ·  " + out["dominant_crop"]
+                         + "  ·  " + out["n_micromarkets"].astype(str) + " micro-markets")
     return out
 
 

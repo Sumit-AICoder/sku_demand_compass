@@ -100,7 +100,10 @@ def test_annual_totals_tie_back_to_operations():
     modelled annual deliveries from operations.py -- the daily story should integrate to
     roughly the same number already shown on the other Review tabs, not a disconnected one."""
     panel = read_table(CURATED / "archetype_sales_daily.parquet")
-    arch = read_table(MARTS / "archetype_ops.parquet").set_index("archetype_id")
+    # The daily panel is fit on the implements line, so the target it ties back to is that
+    # line's -- archetype_ops now holds a row per line and .loc would return both.
+    arch = read_table(MARTS / "archetype_ops.parquet")
+    arch = arch[arch["product_line"] == "implements"].set_index("archetype_id")
     panel["year"] = pd.to_datetime(panel["date"]).dt.year
     annual = panel[panel["year"] == 2024].groupby("archetype_id")["actual_sales"].sum()
     for aid, total in annual.items():

@@ -29,6 +29,11 @@ interface State {
 
   selectedVillage?: string
   setSelectedVillage: (v?: string) => void
+
+  // the archetype the Act stage is scoped to -- shared so the summary and the playbook
+  // always describe the same one
+  actArchetype?: string
+  setActArchetype: (a?: string) => void
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -48,6 +53,8 @@ export const useStore = create<State>((set, get) => ({
   setMonth: (m) => set({ month: m }),
 
   setSelectedVillage: (v) => set({ selectedVillage: v }),
+
+  setActArchetype: (a) => set({ actArchetype: a }),
 }))
 
 /** The geography level whose CHILDREN should currently be listed. */

@@ -67,3 +67,8 @@ pooling:
   enabled: true
   group_by: cluster               # falls back to state before clustering exists
   shrinkage_prior_weight: 6.0
+
+# Forward forecast written alongside the decomposition (the fit already exists, so the
+# forecast is free). 6 months is what the Plan screen shows.
+forecast:
+  horizon_months: 6

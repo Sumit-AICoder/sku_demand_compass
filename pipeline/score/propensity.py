@@ -198,7 +198,8 @@ def build(seed: int = 20260822) -> pd.DataFrame:
 
         propensity = np.clip(prop * soil_fit * head_v, 0.0, None)
 
-        new_units = sub["headroom"].to_numpy() * 0.09 * conv[pos]
+        conv_yr = 0.09 if sku["product_line"] == "implements" else 0.05
+        new_units = sub["headroom"].to_numpy() * conv_yr * conv[pos]
         repl = sub["replacement_units_yr"].to_numpy()
         potential = (new_units + repl) * propensity / max(propensity.mean(), 1e-9)
 
@@ -206,6 +207,7 @@ def build(seed: int = 20260822) -> pd.DataFrame:
             "village_id": sub["village_id"].to_numpy(),
             "district_id": did[pos],
             "sku_id": sku["id"],
+            "product_line": sku["product_line"],
             "category": sku["category"],
             "propensity": propensity,
             "soil_fit": soil_fit,

@@ -54,6 +54,7 @@ def _root_con() -> duckdb.DuckDBPyConnection:
         "sku_overlap": MARTS / "sku_overlap.parquet",
         "cluster_profiles": MARTS / "cluster_profiles.parquet",
         "ucm_decomposition": MARTS / "ucm_decomposition.parquet",
+        "ucm_forecast": MARTS / "ucm_forecast.parquet",
         "ucm_betas": MARTS / "ucm_betas.parquet",
         "ucm_diagnostics": MARTS / "ucm_diagnostics.parquet",
         "ucm_vif": MARTS / "ucm_vif.parquet",
@@ -70,6 +71,8 @@ def _root_con() -> duckdb.DuckDBPyConnection:
         "dealer_network": MARTS / "dealer_network.parquet",
         "dealer_by_oem": MARTS / "dealer_by_oem.parquet",
         "agroclimate": MARTS / "agroclimate.parquet",
+        "aesr_subzones": MARTS / "aesr_subzones.parquet",
+        "district_aesr": MARTS / "district_aesr.parquet",
         "subsidy": MARTS / "subsidy.parquet",
         "micromarkets": MARTS / "micromarkets.parquet",
         "archetypes_mart": MARTS / "micromarket_archetypes.parquet",
@@ -82,10 +85,43 @@ def _root_con() -> duckdb.DuckDBPyConnection:
         "competition": CURATED / "competition_shares.parquet",
         "district_series": CURATED / "district_series.parquet",
     }
+    # Marts that now carry both product lines. Each is registered TWICE: `<name>` filtered to
+    # implements, and `<name>_pl` with both. That way the ~30 queries written before the
+    # second line existed keep returning exactly what they always did, and a screen opts in
+    # to the toggle by moving to the `_pl` view and filtering explicitly. The alternative --
+    # letting every existing query see two rows per village -- double-counts silently, which
+    # is the one failure mode that would not announce itself.
+    SPLIT = {"village_totals", "block_totals", "district_totals", "state_sku",
+             "district_sku", "block_sku", "village_insights"}
+
     for name, path in views.items():
-        if path.exists():
-            c.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet('{path}')")
+        if not path.exists():
+            continue
+        src = f"read_parquet('{path}')"
+        if name in SPLIT:
+            c.execute(f"CREATE VIEW {name}_pl AS SELECT * FROM {src}")
+            c.execute(f"CREATE VIEW {name} AS SELECT * FROM {src} "
+                      f"WHERE product_line = 'implements'")
+        else:
+            c.execute(f"CREATE VIEW {name} AS SELECT * FROM {src}")
     return c
+
+
+# ---------------------------------------------------------------- product line
+
+def _line(product: str | None) -> str:
+    """Normalise the product line a request is scoped to.
+
+    A plain default rather than a FastAPI `Depends`: every one of these endpoints is also
+    called directly as a function by the test suite, and a Depends default arrives there as
+    the sentinel object instead of a string.
+
+    Marts that carry both lines are registered twice (see `_root_con`): the plain view is
+    implements, `<name>_pl` holds both. An endpoint becomes line-aware by taking `product`
+    and reading the `_pl` view with an explicit filter -- so a screen that has not been
+    converted yet cannot silently start summing tractors into implements.
+    """
+    return product if product in ("implements", "tractors") else "implements"
 
 
 _local = threading.local()
@@ -112,6 +148,11 @@ def q(sql: str, params: list | None = None) -> list[dict]:
     if df is None:
         raise RuntimeError("query returned no result set")
     return clean(df.to_dict("records"))
+
+
+def fmt_units(n: float) -> str:
+    """Thousands-separated integer for prose the API writes (play descriptions)."""
+    return f"{round(float(n)):,}"
 
 
 def clean(obj):
@@ -640,65 +681,111 @@ def compete(district_id: str | None = None, category: str | None = None):
 # ---------------------------------------------------------------- define: micro-markets & archetypes
 
 _MM_METRICS = {"tiv", "potential_units_yr", "sonalika_share", "n_villages"}
-_CUSTOM_PATH = MARTS / "custom_archetypes.json"
-_CROP_SHARES = ["crop_wheat_share", "crop_rice_share", "crop_cotton_share",
-                "crop_soybean_share", "crop_sugarcane_share", "crop_maize_share"]
+_TAXONOMY_PATH = MARTS / "taxonomy.json"
 
 
-def _load_rules() -> list[dict]:
+def _load_taxonomy() -> dict:
+    """The taxonomy in force: the user's edited copy if there is one, else the shipped
+    default from config/taxonomy.yaml."""
     import json as _j
-    if _CUSTOM_PATH.exists():
+    from pipeline.cluster import taxonomy as tx
+    if _TAXONOMY_PATH.exists():
         try:
-            return _j.loads(_CUSTOM_PATH.read_text())
+            return _j.loads(_TAXONOMY_PATH.read_text())
         except Exception:                                      # noqa: BLE001
-            return []
-    return []
+            LOG_BAD_TAXONOMY.append(True)                      # fall back rather than 500
+    return tx.load()
 
 
-def _save_rules(rules: list[dict]) -> None:
+def _save_taxonomy(tax: dict) -> None:
     import json as _j
-    _CUSTOM_PATH.write_text(_j.dumps(rules))
+    _TAXONOMY_PATH.write_text(_j.dumps(tax, indent=1))
+    _current_mm.cache_clear()
+    _current_grain_cached.cache_clear()
+    _current_ops_cached.cache_clear()
+    _archetype_players_cached.cache_clear()
+    _approval_cached.cache_clear()
+    # Keyed on nothing, so it survives a re-cluster unless said so: the Define archetype
+    # table would keep naming rivals for archetype ids the edit deleted.
+    _top_branded_rival.cache_clear()
+    _district_rivals.cache_clear()
 
 
-def _apply_rules(df: pd.DataFrame, rules: list[dict]) -> pd.DataFrame:
-    """Reassign micro-markets that match each active custom rule to that new archetype.
+LOG_BAD_TAXONOMY: list[bool] = []
 
-    Applied in order; later rules win. Thresholds are computed against the base
-    population so a rule means the same thing regardless of order.
+
+@lru_cache(maxsize=4)
+def _current_mm_cached(stamp: str) -> pd.DataFrame:
+    """Micro-markets labelled by the taxonomy in force.
+
+    Re-labelling is the whole re-cluster path: `assign()` recomputes TIV tier, HP belt,
+    crop label, zone and archetype for all 23,389 rows in about a second, so editing a
+    category on the Configure screen updates every archetype-grain view without touching
+    the pipeline. Unlike the rule mechanism it replaces, the archetype ids it produces are
+    real category codes -- so a customised taxonomy still joins in Review, Plan and Act
+    instead of vanishing behind a `custom-` prefix.
     """
-    for rule in rules:
-        m = pd.Series(True, index=df.index)
-        if rule.get("tiv") == "high":
-            m &= df["tiv"] >= df["tiv"].quantile(0.66)
-        elif rule.get("tiv") == "low":
-            m &= df["tiv"] <= df["tiv"].quantile(0.33)
-        if rule.get("hp_belt"):
-            m &= df["hp_belt"] == rule["hp_belt"]
-        crop = rule.get("crop")
-        if crop and f"crop_{crop}_share" in df.columns:
-            m &= df[f"crop_{crop}_share"] >= 0.15
-        if rule.get("irrigation") == "irrigated":
-            m &= df["irrigation_reliability"] >= df["irrigation_reliability"].median()
-        elif rule.get("irrigation") == "rainfed":
-            m &= df["irrigation_reliability"] < df["irrigation_reliability"].median()
-        if rule.get("subzone_id"):
-            m &= df["subzone_id"] == rule["subzone_id"]
-        if rule.get("zone"):
-            m &= df["zone"] == rule["zone"]
-        df.loc[m, "archetype"] = rule["name"]
-        df.loc[m, "base_name"] = rule["name"]
-        df.loc[m, "hp_belt"] = "(custom)"
-        df.loc[m, "tiv_tier"] = "(custom)"
-        df.loc[m, "subzone"] = "(custom)"
-        df.loc[m, "archetype_id"] = "custom-" + rule["name"]
-    return df
+    from pipeline.cluster import taxonomy as tx
+    df = con().execute("SELECT * FROM micromarkets").fetchdf()
+    return tx.assign(df, _load_taxonomy())
 
 
 def _current_mm() -> pd.DataFrame:
-    """The micro-market table with any active custom archetypes applied -- the single
-    source every Define view reads, so a reconfigure shows up on all tabs at once."""
-    df = con().execute("SELECT * FROM micromarkets").fetchdf()
-    return _apply_rules(df, _load_rules())
+    """The micro-market table every Define view reads, so a reconfigure shows on all tabs."""
+    return _current_mm_cached(_stamp()).copy()
+
+
+_current_mm.cache_clear = _current_mm_cached.cache_clear      # type: ignore[attr-defined]
+
+
+@lru_cache(maxsize=4)
+def _current_grain_cached(stamp: str, line: str = "implements") -> pd.DataFrame:
+    """micromarket_ops for one product line, with the taxonomy in force applied.
+
+    Keyed on the line as well as the taxonomy: without it the first request's line would be
+    cached and served to the other one, which is the kind of wrong answer that looks
+    completely plausible on screen.
+    """
+    grain = con().execute("SELECT * FROM micromarket_ops WHERE product_line = ?",
+                          [line]).fetchdf()
+    if stamp == "shipped":
+        return grain
+    mm = _current_mm().set_index("micro_market_id")
+    for col in ("archetype_id", "archetype", "base_name", "hp_belt", "tiv_tier", "subzone_id"):
+        grain[col] = grain["micro_market_id"].map(mm[col])
+    return grain.dropna(subset=["archetype_id"])
+
+
+@lru_cache(maxsize=4)
+def _current_ops_cached(stamp: str, line: str = "implements") -> pd.DataFrame:
+    """Archetype-grain operations under the taxonomy in force.
+
+    On the shipped taxonomy this is the mart, read straight through. Once Configure edits it,
+    micro-markets move between archetypes, so the rollup is recomputed from micro-market grain
+    with the same function the pipeline uses -- otherwise Define would show the client's 43
+    archetypes while Plan, Review and Act kept serving the shipped 46.
+
+    What it cannot recompute is anything *fitted* per archetype: the UCM panels and the
+    cluster profiles stay keyed on the shipped ids until the pipeline is re-run, so a
+    split-out zone shows its numbers with those two fields blank rather than wrong.
+    """
+    if stamp == "shipped":
+        return con().execute("SELECT * FROM archetype_ops WHERE product_line = ?",
+                             [line]).fetchdf()
+    from pipeline.simulate.operations import rollup
+    return rollup(_current_grain_cached(stamp, line)).assign(product_line=line)
+
+
+def _stamp() -> str:
+    return str(_TAXONOMY_PATH.stat().st_mtime) if _TAXONOMY_PATH.exists() else "shipped"
+
+
+def _current_ops(line: str = "implements") -> pd.DataFrame:
+    return _current_ops_cached(_stamp(), line).copy()
+
+
+def _current_grain(line: str = "implements") -> pd.DataFrame:
+    return _current_grain_cached(_stamp(), line).copy()
 
 
 def _summarise_mm(df: pd.DataFrame) -> list[dict]:
@@ -719,23 +806,139 @@ def _summarise_mm(df: pd.DataFrame) -> list[dict]:
             "potential_units_yr": round(float(g["potential_units_yr"].sum())),
             "mean_hp": round(float((g["mean_hp"] * g["tiv"]).sum() / max(tiv, 1)), 1),
             "states": ", ".join(g["state"].value_counts().head(3).index),
-            "is_custom": bool(str(g["archetype_id"].iloc[0]).startswith("custom-")),
+            # the true modal crop of the member micro-markets -- the zone's crop_label names
+            # the archetype, but this is the crop actually grown in most of it
+            "dominant_crop": (g["dominant_crop"].mode().iloc[0]
+                              if "dominant_crop" in g and len(g["dominant_crop"].mode()) else ""),
+            "subzones": ", ".join(sorted(g["subzone_id"].dropna().unique())),
         })
-    rows.sort(key=lambda r: -r["potential_units_yr"])
+    # Ranked by fleet: Define describes the market, so it sorts by the market's own size.
+    # Demand ranking belongs to Plan, which is where the choice of where to sell is made.
+    rows.sort(key=lambda r: -r["tiv"])
     return rows
+
+
+@lru_cache(maxsize=1)
+def _top_branded_rival() -> dict[str, dict]:
+    """The strongest branded competitor in each archetype.
+
+    Not the leader: the unbranded "Local" segment leads all of them, so a leader column
+    would read the same on every row. Excluding Local and ourselves leaves the rival a
+    territory manager would actually name.
+    """
+    pl = _archetype_players()
+    if pl.empty:
+        return {}
+    branded = pl[~pl["player"].isin(["Local", "Sonalika"])]
+    top = (branded.sort_values("share", ascending=False)
+                  .drop_duplicates("archetype_id").set_index("archetype_id"))
+    return {k: {"rival": v["player"], "rival_share": float(v["share"])}
+            for k, v in top.to_dict("index").items()}
+
+
+@app.get("/api/define/profile")
+def define_profile(level: str, id: str):
+    """One panel for either grain: what kind of place this is, and who serves it.
+
+    The two Define tabs used to answer this separately -- a dot map for micro-markets, a
+    table for districts -- so the same question had two homes and neither had a map you
+    could zoom. This is the single payload behind the merged view.
+
+    Honest about grain: rainfall, temperature and the crop mix are district measurements,
+    so a micro-market inherits its district's values and the response says so. Dealer counts
+    exist only at district grain (the dealer file is real but district-geocoded), so a
+    micro-market gets distance-to-dealer instead of an invented count.
+    """
+    if level not in ("district", "micromarket"):
+        raise HTTPException(400, "level must be district or micromarket")
+
+    mm = _current_mm()
+    if level == "micromarket":
+        row = mm[mm["micro_market_id"] == id]
+        if row.empty:
+            raise HTTPException(404, "micro-market not found")
+        r = row.iloc[0]
+        district_id, name = r["district_id"], f"{r['district']} · {id}"
+        scope = {"micromarkets": 1, "villages": int(r["n_villages"]),
+                 "sonalika_share": float(r["sonalika_share"]),
+                 "tiv": round(float(r["tiv"])), "mean_hp": round(float(r["mean_hp"]), 1),
+                 "hp_belt": r["hp_belt"], "tiv_tier": r["tiv_tier"],
+                 "dominant_crop": r["dominant_crop"],
+                 "hp_mix": {k: float(r[k]) for k in
+                            ("hp_20_35", "hp_35_45", "hp_45_60", "hp_60_plus") if k in r},
+                 "archetype": r["archetype"], "archetype_id": r["archetype_id"],
+                 "irrigation": float(r["irrigation_reliability"]),
+                 "dealer_km": None, "dealer_accessibility": float(r["dealer_accessibility"]),
+                 "lon": float(r["lon"]), "lat": float(r["lat"])}
+        acc = con().execute("""SELECT avg(service_distance_km) km FROM micromarket_ops
+                               WHERE micro_market_id = ?""", [id]).fetchdf()
+        if len(acc) and pd.notna(acc["km"].iloc[0]):
+            scope["dealer_km"] = round(float(acc["km"].iloc[0]), 1)
+    else:
+        g = mm[mm["district_id"] == id]
+        if g.empty:
+            raise HTTPException(404, "district not found")
+        district_id = id
+        name = g["district"].iloc[0]
+        tiv = float(g["tiv"].sum())
+        scope = {"micromarkets": int(len(g)), "villages": int(g["n_villages"].sum()),
+                 "tiv": round(tiv), "mean_hp": round(float((g["mean_hp"] * g["tiv"]).sum()
+                                                           / max(tiv, 1)), 1),
+                 "hp_belt": g["hp_belt"].mode().iloc[0] if len(g["hp_belt"].mode()) else "",
+                 "tiv_tier": g["tiv_tier"].mode().iloc[0] if len(g["tiv_tier"].mode()) else "",
+                 "dominant_crop": (g["dominant_crop"].mode().iloc[0]
+                                   if len(g["dominant_crop"].mode()) else ""),
+                 "hp_mix": {k: float(g[k].sum()) for k in
+                            ("hp_20_35", "hp_35_45", "hp_45_60", "hp_60_plus") if k in g},
+                 "archetype": None, "archetype_id": None,
+                 "irrigation": float(g["irrigation_reliability"].mean()),
+                 "dealer_km": None,
+                 "dealer_accessibility": float(g["dealer_accessibility"].mean()),
+                 "lon": float(g["lon"].mean()), "lat": float(g["lat"].mean())}
+
+    agro = q("""SELECT district, state, mean_temp, temp_is_allocated, rain_normal_mm,
+                       rain_departure_pct, total_crop_area_lha, top_crops,
+                       crop_wheat_share, crop_rice_share, crop_cotton_share,
+                       crop_soybean_share, crop_sugarcane_share, crop_maize_share
+                FROM agroclimate WHERE district_id = ?""", [district_id])
+    soil = q("""SELECT aesr_code, soil_type, climate, lgp_days, region, sub_region
+                FROM district_aesr WHERE district_id = ?""", [district_id])
+    dealers = q("""SELECT product_line, own_dealers, competitor_dealers, total_dealers, n_oems
+                   FROM dealer_network WHERE district_id = ?""", [district_id])
+    oems = q("""SELECT oem, sum(dealers) AS dealers FROM dealer_by_oem
+                WHERE district_id = ? GROUP BY 1 ORDER BY 2 DESC LIMIT 6""", [district_id])
+    geo = q("""SELECT zone, zone_name, subzone_id, subzone, lgp FROM micromarkets
+               WHERE district_id = ? LIMIT 1""", [district_id])
+
+    return clean({
+        "level": level, "id": id, "name": name, "district_id": district_id,
+        "scope": scope,
+        "agro": (agro[0] if agro else {}),
+        "soil": (soil[0] if soil else {}),
+        "geography": (geo[0] if geo else {}),
+        "dealers": {"by_line": dealers, "oems": oems,
+                    "note": ("real, district-grain; the implements dealer file has no Punjab "
+                             "rows, so a zero there means no data, not white space")},
+        "provenance": {"agro": "real · IMD/DES", "soil": "real · NBSS-ICAR AESR",
+                       "dealers": "real · dealer locator", "fleet": "modelled · ITL pending",
+                       "grain": ("district measurements shown at micro-market grain"
+                                 if level == "micromarket" else "district grain")},
+    })
 
 
 @app.get("/api/define/districts")
 def define_districts():
     """District profile for Define: real agro-climate (incl. crop-mix) + modelled TIV/share."""
-    crop_sel = ", ".join(f"a.{c}" for c in _CROP_SHARES)
+    # The crop columns come from the taxonomy so adding a crop in Configure widens this
+    # table too, instead of leaving a hardcoded list to drift out of sync.
+    crop_sel = ", ".join(f"a.{c['share_column']}" for c in _load_taxonomy()["crops"]
+                         if c.get("share_column"))
     rows = q(f"""
         SELECT a.district_id, a.district, a.state,
                a.mean_temp, a.temp_seasonality, a.rain_normal_mm, a.rain_departure_pct,
                a.total_crop_area_lha, a.top_crops, a.temp_is_allocated, {crop_sel},
                m.tiv, m.sonalika_share, m.n_micromarkets, m.n_villages,
-               m.subzone_id, m.subzone, m.zone_name, m.lgp,
-               t.potential_units_yr AS demand_units
+               m.subzone_id, m.subzone, m.zone_name, m.lgp
         FROM agroclimate a
         LEFT JOIN (SELECT district_id, sum(tiv) AS tiv,
                           count(*) AS n_micromarkets, sum(n_villages) AS n_villages,
@@ -743,7 +946,6 @@ def define_districts():
                           max(subzone_id) AS subzone_id, max(subzone) AS subzone,
                           max(zone_name) AS zone_name, max(lgp) AS lgp
                    FROM micromarkets GROUP BY district_id) m USING (district_id)
-        LEFT JOIN district_totals t USING (district_id)
         ORDER BY a.state, a.district
     """)
     return {"provenance": "mixed", "districts": rows}
@@ -751,16 +953,24 @@ def define_districts():
 
 @app.get("/api/archetypes")
 def archetypes():
-    """Base-segment x HP-belt archetypes (with any active custom archetypes applied)."""
+    """Zone x TIV tier x HP belt archetypes, labelled by the taxonomy in force.
+
+    Define answers "what kinds of market exist and how big are they", so these rows carry
+    fleet, spread and competition -- not demand. Demand is the ranking Plan uses to choose
+    between them, and it stays there.
+    """
     df = _current_mm()
     rows = _summarise_mm(df)
+    rival = _top_branded_rival()
+    for r in rows:
+        r.update(rival.get(r["archetype_id"], {"rival": None, "rival_share": None}))
+        r.pop("potential_units_yr", None)
     tot_tiv = sum(r["tiv"] for r in rows) or 1
     totals = {
         "n_archetypes": len(rows),
         "n_micromarkets": int(len(df)),
         "n_villages": int(df["n_villages"].sum()),
         "tiv": sum(r["tiv"] for r in rows),
-        "potential_units_yr": sum(r["potential_units_yr"] for r in rows),
         "avg_sonalika_share": sum(r["avg_sonalika_share"] * r["tiv"] for r in rows) / tot_tiv,
     }
     belts = []
@@ -776,9 +986,12 @@ def archetypes():
                       "lgp": lgp, "micromarkets": int(len(g)), "tiv": round(float(g["tiv"].sum())),
                       "states": ", ".join(g["state"].value_counts().head(3).index)})
     zones.sort(key=lambda z: (z["zone"], z["subzone_id"]))
-    n_custom = sum(1 for r in rows if r["is_custom"])
+    # `subzones` and `hp_belts` no longer have a table of their own on the Archetypes
+    # screen -- they stay in the payload because Configure lists sub-zones when you compose
+    # a zone, and the header states how many of each the current taxonomy uses.
     return {"provenance": "allocated", "archetypes": rows, "totals": clean(totals),
-            "hp_belts": belts, "subzones": zones, "custom_count": n_custom}
+            "hp_belts": belts, "subzones": zones,
+            "customised": _TAXONOMY_PATH.exists()}
 
 
 @app.get("/api/micromarkets")
@@ -815,42 +1028,92 @@ def micromarket_detail(mm_id: str):
     return {"micromarket": mm, "villages": villages}
 
 
-class ConfigureRule(BaseModel):
-    name: str = Field(..., min_length=1, max_length=60)
-    tiv: str | None = None          # 'high' | 'low' | None
-    hp_belt: str | None = None      # e.g. '41-50 HP'
-    crop: str | None = None         # 'wheat' | 'rice' | 'cotton' | 'soybean' | 'sugarcane'
-    irrigation: str | None = None   # 'irrigated' | 'rainfed' | None
-    subzone_id: str | None = None   # NARP sub-zone id, e.g. '6.4'
-    zone: str | None = None         # NARP zone id, e.g. '6'
+# ---------------------------------------------------------------- define: the taxonomy
 
+class Taxonomy(BaseModel):
+    """The whole category set, edited as one document.
 
-@app.post("/api/archetypes/configure")
-def configure(rule: ConfigureRule):
-    """Define a NEW archetype from a rule and PERSIST it, so every Define tab updates.
-
-    The rule (thresholds over TIV, HP belt, crop share, irrigation) is saved; matching
-    micro-markets are reassigned to the new archetype on every read. Re-running with an
-    existing name replaces that rule. Deterministic and transparent.
+    One PUT covers every operation the Configure screen offers -- create, edit and delete a
+    TIV tier, an HP belt or a crop category, and merge crops by listing several under one
+    category -- because all of those are just a different `tiv_tiers` / `hp_belts` / `crops`
+    array. `zones` round-trips unchanged: it is the published ICAR scheme, shown on the
+    screen but not editable, because the soil and growing-season data are measured against
+    those boundaries.
     """
-    rules = [r for r in _load_rules() if r.get("name") != rule.name]
-    rules.append(rule.model_dump(exclude_none=True))
-    _save_rules(rules)
+    version: int = 1
+    tiv_tiers: list[dict]
+    hp_belts: list[dict]
+    crops: list[dict]
+    crop_label: dict = Field(default_factory=dict)
+    zones: list[dict]
 
+
+def _taxonomy_state(tax: dict) -> dict:
+    from pipeline.cluster import taxonomy as tx
+    return {"taxonomy": tax, "customised": _TAXONOMY_PATH.exists(),
+            "describes": tx.describe(tax)}
+
+
+@app.get("/api/taxonomy")
+def taxonomy_get():
+    """The categories an archetype is built from, and what they currently produce."""
+    tax = _load_taxonomy()
     df = _current_mm()
-    matched = df[df["archetype"] == rule.name]
-    summary = _summarise_mm(df)
-    return {"new_archetype": rule.name, "moved_micromarkets": int(len(matched)),
-            "n_archetypes": len(summary), "custom_count": len(rules),
-            "archetypes": summary}
+    return clean({**_taxonomy_state(tax),
+                  "n_archetypes": int(df["archetype_id"].nunique()),
+                  "n_micromarkets": int(len(df)),
+                  "subzones": sorted(df["subzone_id"].dropna().unique().tolist()),
+                  "crops_present": sorted(df["dominant_crop"].dropna().unique().tolist())})
 
 
-@app.post("/api/archetypes/reset")
-def configure_reset():
-    """Clear all custom archetypes -- revert Define to the base base-segment x HP model."""
-    _save_rules([])
+@app.put("/api/taxonomy")
+def taxonomy_put(t: Taxonomy):
+    """Save an edited taxonomy and re-label every micro-market against it.
+
+    This is the "re-cluster" the Configure screen offers, and it is honest about what it
+    does: micro-market membership is fixed by the pipeline, but which archetype each one
+    belongs to is recomputed here, in about a second, for all 23,389.
+    """
+    from pipeline.cluster import taxonomy as tx
+    tax = t.model_dump()
+    # Zones are the published ICAR scheme, not a client field: the soil, climate and
+    # growing-season figures are measured against those boundaries, so a redrawn zone would
+    # carry data that no longer describes it. Whatever came in, the shipped zones win.
+    tax["zones"] = tx.load()["zones"]
+    tax.pop("crop_label", None)
+    problems = tx.validate(tax)
+    if problems:
+        raise HTTPException(400, {"problems": problems})
+
+    before = _current_mm()["archetype_id"].nunique()
+    _save_taxonomy(tax)
     df = _current_mm()
-    return {"n_archetypes": df["archetype"].nunique(), "custom_count": 0}
+    return clean({**_taxonomy_state(tax),
+                  "n_archetypes": int(df["archetype_id"].nunique()),
+                  "was": int(before),
+                  "moved_micromarkets": int(len(df)),
+                  "archetypes": _summarise_mm(df)})
+
+
+@app.post("/api/taxonomy/reset")
+def taxonomy_reset():
+    """Back to the shipped taxonomy."""
+    if _TAXONOMY_PATH.exists():
+        _TAXONOMY_PATH.unlink()
+    _current_mm.cache_clear()
+    _current_grain_cached.cache_clear()
+    _current_ops_cached.cache_clear()
+    _archetype_players_cached.cache_clear()
+    _approval_cached.cache_clear()
+    # Keyed on nothing, so it survives a re-cluster unless said so: the Define archetype
+    # table would keep naming rivals for archetype ids the edit deleted.
+    _top_branded_rival.cache_clear()
+    _district_rivals.cache_clear()
+    tax = _load_taxonomy()
+    df = _current_mm()
+    return clean({**_taxonomy_state(tax),
+                  "n_archetypes": int(df["archetype_id"].nunique()),
+                  "archetypes": _summarise_mm(df)})
 
 
 # ---------------------------------------------------------------- review: what drives sales (archetype UCM)
@@ -982,6 +1245,756 @@ def plan_districts():
     return {"provenance": "real", "districts": rows}
 
 
+# ---------------------------------------------------------------- plan: where to play
+
+def _archetype_players(line: str = "implements") -> pd.DataFrame:
+    """Per-archetype OEM share: district player shares, TIV-weighted onto archetypes.
+
+    player_shares is district x category x player. An archetype spans districts, so its
+    share for a player is that player's district shares (averaged over categories)
+    weighted by the TIV the archetype actually holds in each district.
+    """
+    return _archetype_players_cached(_stamp(), line).copy()
+
+
+@lru_cache(maxsize=4)
+def _archetype_players_cached(stamp: str, line: str = "implements") -> pd.DataFrame:
+    # The TIV weights come from the labels in force rather than the mart, so the competitor
+    # board is still populated for an archetype the client created on Configure.
+    dw = (_current_grain_cached(stamp, line).groupby(["archetype_id", "district_id"])["tiv"]
+          .sum().reset_index(name="w"))
+    ps = con().execute("""SELECT district_id, player, avg(share) AS sh
+                          FROM player_shares GROUP BY 1, 2""").fetchdf()
+    m = dw.merge(ps, on="district_id")
+    m["num"] = m["sh"] * m["w"]
+    out = m.groupby(["archetype_id", "player"]).agg(num=("num", "sum"), w=("w", "sum")).reset_index()
+    out["share"] = out["num"] / out["w"].replace(0, np.nan)
+    return out[["archetype_id", "player", "share"]]
+
+
+def _plan_buckets(line: str = "implements", fit_min: float = 0.55,
+                  mode: str = "stronghold", defend_pct: float = 0.75) -> pd.DataFrame:
+    """Bucket every archetype into Defend / Grow / No product fit.
+
+    `mode="leader"` is the literal reading -- Defend only where Sonalika is the #1 OEM.
+    On today's modelled shares that bucket comes back EMPTY: the unbranded "Local" segment
+    leads all 53 archetypes and our share sits between 6.3% and 9.0% everywhere. So the
+    default `mode="stronghold"` reads Defend as relative strength instead -- the top
+    `defend_pct` of archetypes by our own share, where the product also fits. Both modes
+    ship because which one is right depends on real ITL share data we do not have yet.
+    """
+    a = _current_ops(line)
+    # TIV-weighted centroid, so an archetype can be placed on the map without shipping
+    # all 23,389 micro-markets to the browser.
+    cen = con().execute("""
+        SELECT archetype_id,
+               sum(lon * tiv) / nullif(sum(tiv), 0) AS lon,
+               sum(lat * tiv) / nullif(sum(tiv), 0) AS lat
+        FROM micromarket_ops GROUP BY 1""").fetchdf().set_index("archetype_id")
+    a["lon"] = a["archetype_id"].map(cen["lon"])
+    a["lat"] = a["archetype_id"].map(cen["lat"])
+    pl = _archetype_players(line)
+    if len(pl):
+        pl["rank"] = pl.groupby("archetype_id")["share"].rank(ascending=False, method="min")
+        top = pl[pl["rank"] == 1].drop_duplicates("archetype_id").set_index("archetype_id")
+        own = pl[pl["player"] == "Sonalika"].set_index("archetype_id")
+        a["leader"] = a["archetype_id"].map(top["player"])
+        a["leader_share"] = a["archetype_id"].map(top["share"])
+        a["own_rank"] = a["archetype_id"].map(own["rank"])
+    else:                                     # no competition mart -- degrade, don't 500
+        a["leader"], a["leader_share"], a["own_rank"] = None, np.nan, np.nan
+
+    no_fit = a["product_fit"] < fit_min
+    if mode == "leader":
+        defend = a["own_rank"] == 1
+    else:
+        defend = a["avg_sonalika_share"] >= a["avg_sonalika_share"].quantile(defend_pct)
+    a["bucket"] = np.where(no_fit, "No product fit",
+                           np.where(defend, "Defend", "Grow"))
+    a["share_gap"] = a["leader_share"] - a["avg_sonalika_share"]
+    # The bottom fifth by demand is shown greyed rather than hidden -- dropping it would
+    # lose the denominator the percentages are read against.
+    a["low_demand"] = a["potential_units_yr"] <= a["potential_units_yr"].quantile(0.20)
+    return a.sort_values("potential_units_yr", ascending=False)
+
+
+@app.get("/api/plan/buckets")
+def plan_buckets(fit_min: float = 0.55, mode: str = "stronghold",
+                 defend_pct: float = 0.75, product: str = "implements"):
+    """Archetypes split Defend / Grow / No product fit, with the rule that produced it."""
+    line = _line(product)
+    a = _plan_buckets(line, fit_min,
+                      mode if mode in ("stronghold", "leader") else "stronghold", defend_pct)
+    totals = [{"bucket": b,
+               "archetypes": int((a["bucket"] == b).sum()),
+               "villages": int(a.loc[a["bucket"] == b, "n_villages"].sum()),
+               "micromarkets": int(a.loc[a["bucket"] == b, "n_micromarkets"].sum()),
+               "tiv": round(float(a.loc[a["bucket"] == b, "tiv"].sum())),
+               "demand": round(float(a.loc[a["bucket"] == b, "potential_units_yr"].sum()))}
+              for b in ("Defend", "Grow", "No product fit")]
+    cols = ["archetype_id", "archetype", "base_name", "hp_belt", "subzone", "subzone_id",
+            "bucket", "low_demand", "avg_sonalika_share", "leader", "leader_share",
+            "share_gap", "own_rank", "product_fit", "n_micromarkets", "n_villages", "tiv",
+            "potential_units_yr", "sonalika_sales_units", "activities_yr", "enquiries_yr",
+            "deliveries_yr", "conversion_rate", "sales_coverage", "diagnosis", "states",
+            "lon", "lat"]
+    rule = ("Defend = we are the #1 OEM in the archetype"
+            if mode == "leader" else
+            f"Defend = top {round((1 - defend_pct) * 100)}% of archetypes by our own share")
+    return {"product_line": product, "provenance": "modelled",
+            "rule": {"mode": mode, "fit_min": fit_min, "defend_pct": defend_pct,
+                     "defend": rule,
+                     "no_fit": f"No product fit = product fit below {fit_min}",
+                     "grow": "Grow = everything else -- the product works, the share doesn't"},
+            "totals": totals,
+            "archetypes": clean(a[cols].to_dict("records"))}
+
+
+@app.get("/api/plan/bucket/{archetype_id}/micromarkets")
+def plan_bucket_micromarkets(archetype_id: str, limit: int = 400):
+    """One archetype's micro-markets, descending by TIV, with the full BD funnel."""
+    rows = q("""
+        SELECT micro_market_id, district, state, n_villages, tiv, mean_hp, hp_belt,
+               sonalika_share, sonalika_sales_units, potential_units_yr,
+               activities_yr, enquiries_yr, deliveries_yr, conversion_rate,
+               product_fit, dealer_accessibility, lon, lat
+        FROM micromarket_ops WHERE archetype_id = ?
+        ORDER BY tiv DESC LIMIT ?
+    """, [archetype_id, limit])
+    return {"archetype_id": archetype_id, "provenance": "modelled", "micromarkets": rows}
+
+
+# ---------------------------------------------------------------- plan: forecast
+
+class PlanForecast(BaseModel):
+    shocks: dict[str, float] = Field(default_factory=dict)
+    weights: dict[str, float] = Field(default_factory=dict)
+    state: str | None = None
+    archetype_id: str | None = None
+    metric: str = "demand"                       # demand | registrations
+    history_months: int = 12
+
+
+def _scope_weights(state: str | None, archetype_id: str | None) -> pd.DataFrame:
+    """District weights for a scope.
+
+    A state or the whole pilot takes each district whole (weight 1). An archetype takes
+    only the slice of a district it actually holds -- its share of that district's TIV --
+    because an archetype spans parts of many districts and claiming the whole district's
+    registrations would overstate it several-fold.
+    """
+    if archetype_id:
+        w = con().execute("""
+            WITH a AS (SELECT district_id, sum(tiv) AS own FROM micromarket_ops
+                       WHERE archetype_id = ? GROUP BY 1),
+                 d AS (SELECT district_id, sum(tiv) AS tot FROM micromarket_ops GROUP BY 1)
+            SELECT a.district_id, a.own / nullif(d.tot, 0) AS w
+            FROM a JOIN d USING (district_id)""", [archetype_id]).fetchdf()
+    elif state:
+        w = con().execute("SELECT district_id, 1.0 AS w FROM district_totals WHERE state = ?",
+                          [state]).fetchdf()
+    else:
+        w = con().execute("SELECT district_id, 1.0 AS w FROM district_totals").fetchdf()
+    return w.dropna()
+
+
+@app.post("/api/plan/forecast")
+def plan_forecast(s: PlanForecast):
+    """Six months forward, and what the scenario sliders do to it.
+
+    Two separable pieces, deliberately: the SHAPE is the district UCM's own forecast
+    (trend + estimated seasonal + drivers at a normal year), and the SHIFT is the shock
+    propagated through each district's own beta -- the same elasticity path /api/scenario
+    uses, applied month by month instead of to one annual scalar. Factor-weight overrides
+    re-score demand, so they come from the scenario re-scorer and land as a level shift.
+    """
+    w = _scope_weights(s.state, s.archetype_id)
+    if w.empty:
+        raise HTTPException(404, "no districts in that scope")
+    wt = w.set_index("district_id")["w"]
+
+    hist = con().execute("SELECT district_id, month, observed FROM ucm_decomposition").fetchdf()
+    fcst = con().execute("SELECT district_id, month, forecast, lo, hi FROM ucm_forecast").fetchdf()
+    if fcst.empty:
+        raise HTTPException(503, "no forecast mart -- run `python -m pipeline.run --stage ucm`")
+
+    # ---- shock multiplier, per district, from its own betas -----------------
+    mult = pd.Series(1.0, index=wt.index)
+    var = pd.Series(0.0, index=wt.index)
+    applied = []
+    if s.shocks:
+        B = con().execute("SELECT district_id, regressor, beta, se, usable FROM ucm_betas").fetchdf()
+        bad = set(s.shocks) - set(B["regressor"].unique())
+        if bad:
+            raise HTTPException(400, f"unknown regressors {bad}")
+        log_delta = pd.Series(0.0, index=wt.index)
+        for r_, sd_ in s.shocks.items():
+            br = B[B["regressor"] == r_].set_index("district_id")
+            log_delta += wt.index.map(br["beta"]).to_series(index=wt.index).fillna(br["beta"].mean()) * sd_
+            var += (wt.index.map(br["se"]).to_series(index=wt.index).fillna(br["se"].mean()) * sd_) ** 2
+            applied.append({
+                "regressor": r_, "shock_sd": sd_,
+                "beta_pooled": round(float(br["beta"].mean()), 4),
+                "beta_min": round(float(br["beta"].min()), 4),
+                "beta_max": round(float(br["beta"].max()), 4),
+                "effect_pct_pooled": round((float(np.exp(br["beta"].mean() * sd_)) - 1) * 100, 2),
+                "usable_share": round(float(br["usable"].mean()), 2),
+            })
+        mult = np.exp(log_delta)
+
+    # Factor weights re-score demand itself, which the time series cannot express -- take
+    # the scenario re-scorer's own answer and apply it as a level shift.
+    weight_mult = 1.0
+    if s.weights:
+        sc = scenario(Scenario(weights=s.weights, state=s.state, level="state"))
+        base_u = sc["total"]["units_base"] or 1.0
+        weight_mult = sc["total"]["units_scenario"] / base_u
+
+    def _agg(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        d = df[df["district_id"].isin(wt.index)].copy()
+        d["w"] = d["district_id"].map(wt)
+        for c in cols:
+            d[c] = d[c] * d["w"]
+        return d.groupby("month", as_index=False)[cols].sum().sort_values("month")
+
+    h = _agg(hist, ["observed"])
+    f = _agg(fcst, ["forecast", "lo", "hi"])
+
+    # Scenario line: the district shock multipliers, TIV-weighted onto the scope total.
+    d_f = fcst[fcst["district_id"].isin(wt.index)].copy()
+    d_f["w"] = d_f["district_id"].map(wt)
+    d_f["m"] = d_f["district_id"].map(mult).fillna(1.0)
+    scen = (d_f.assign(v=d_f["forecast"] * d_f["w"] * d_f["m"] * weight_mult)
+                .groupby("month", as_index=False)["v"].sum().sort_values("month"))
+    f = f.merge(scen, on="month", how="left").rename(columns={"v": "scenario"})
+    band = float(1.645 * np.sqrt(float((var * wt).sum() / max(wt.sum(), 1e-9))))
+
+    # ---- metric --------------------------------------------------------------
+    # Registrations come straight off the model. Demand is the annual implement potential
+    # for this scope spread on the SAME estimated monthly shape -- the seasonality is the
+    # UCM's, not a flat twelfth.
+    unit = "tractor registrations / month"
+    if s.metric != "registrations":
+        ann = con().execute("SELECT district_id, potential_units_yr FROM district_totals").fetchdf()
+        annual = float((ann.set_index("district_id")["potential_units_yr"]
+                        .reindex(wt.index).fillna(0.0) * wt).sum())
+        series = pd.concat([h.rename(columns={"observed": "v"})[["month", "v"]],
+                            f.rename(columns={"forecast": "v"})[["month", "v"]]])
+        roll = series.set_index("month")["v"].rolling(12).sum()
+        for frame, cols in ((h, ["observed"]), (f, ["forecast", "lo", "hi", "scenario"])):
+            share = frame["month"].map(roll)
+            for c in cols:
+                frame[c] = frame[c] / share * annual
+        unit = "implement demand, units / month"
+
+    tail = int(max(s.history_months, 1))
+    history = [{"month": r["month"], "actual": round(float(r["observed"]), 1)}
+               for _, r in h.tail(tail).iterrows() if np.isfinite(r["observed"])]
+    forecast = [{"month": r["month"],
+                 "baseline": round(float(r["forecast"]), 1),
+                 "scenario": round(float(r["scenario"]), 1),
+                 "lo": round(float(r["lo"]) * np.exp(-band), 1),
+                 "hi": round(float(r["hi"]) * np.exp(band), 1)}
+                for _, r in f.iterrows()]
+
+    base_sum = float(f["forecast"].sum()) or 1.0
+    scen_sum = float(f["scenario"].sum())
+    by_state = []
+    if s.shocks and not s.state and not s.archetype_id:
+        st = con().execute("SELECT district_id, state FROM district_totals").fetchdf()
+        d_f["state"] = d_f["district_id"].map(st.set_index("district_id")["state"])
+        gb = d_f.groupby("state").apply(
+            lambda g: pd.Series({
+                "units_base": float((g["forecast"] * g["w"]).sum()),
+                "units_scenario": float((g["forecast"] * g["w"] * g["m"]).sum() * weight_mult)}),
+            include_groups=False).reset_index()
+        gb["delta_pct"] = np.where(gb["units_base"] > 0,
+                                   (gb["units_scenario"] / gb["units_base"] - 1) * 100, 0.0)
+        by_state = clean(gb.sort_values("delta_pct").to_dict("records"))
+
+    return clean({
+        "metric": s.metric, "unit": unit, "provenance": "allocated",
+        "scope": {"state": s.state, "archetype_id": s.archetype_id,
+                  "districts": int(len(wt))},
+        "history": history, "forecast": forecast,
+        "history_ends": history[-1]["month"] if history else None,
+        "total": {"baseline": round(base_sum, 1), "scenario": round(scen_sum, 1),
+                  "delta_pct": round((scen_sum / base_sum - 1) * 100, 2),
+                  "ci_low_pct": round((np.exp(-band) * scen_sum / base_sum - 1) * 100, 2),
+                  "ci_high_pct": round((np.exp(band) * scen_sum / base_sum - 1) * 100, 2)},
+        "shocks_applied": applied, "by_state": by_state,
+    })
+
+
+# ---------------------------------------------------------------- plan: targets
+
+@app.get("/api/plan/targets")
+def plan_targets(archetype_id: str, target_units: float | None = None,
+                 fit_min: float = 0.55, mode: str = "stronghold",
+                 defend_pct: float = 0.75, product: str = "implements"):
+    """Back-solve the BD funnel for a target, and rank the levers that could close it.
+
+    The funnel is an identity in the marts -- deliveries = share x demand, enquiries =
+    deliveries / conversion_rate, activities = enquiries / enquiry_rate -- so inverting it
+    is arithmetic, not a model. Peer benchmarks come from Grow archetypes in the same HP
+    belt, which is the fairest comparison available.
+    """
+    a = _plan_buckets(_line(product), fit_min, mode, defend_pct)
+    row = a[a["archetype_id"] == archetype_id]
+    if row.empty:
+        raise HTTPException(404, "archetype not found")
+    r = row.iloc[0]
+
+    deliveries = float(r["deliveries_yr"]) or 0.0
+    enquiries = float(r["enquiries_yr"]) or 0.0
+    activities = float(r["activities_yr"]) or 0.0
+    conv = float(r["conversion_rate"]) or 0.0                 # deliveries / enquiries
+    enq_rate = enquiries / activities if activities else 0.0  # enquiries / activities
+    demand = float(r["potential_units_yr"]) or 0.0
+    share = float(r["avg_sonalika_share"]) or 0.0
+    gap = float(r["share_gap"]) if pd.notna(r["share_gap"]) else 0.0
+
+    # Default target closes a quarter of the distance to the archetype's leader, so the
+    # screen opens on a defensible number instead of a blank box.
+    default_units = round(demand * (share + 0.25 * max(gap, 0.0)))
+    target = float(target_units) if target_units else float(default_units)
+
+    need_enq = target / conv if conv else 0.0
+    need_act = need_enq / enq_rate if enq_rate else 0.0
+
+    peers = a[(a["bucket"] == "Grow") & (a["hp_belt"] == r["hp_belt"])
+              & (a["archetype_id"] != archetype_id)]
+    peer_conv = float(peers["conversion_rate"].median()) if len(peers) else conv
+    peer_cov = float(peers["sales_coverage"].median()) if len(peers) else float(r["sales_coverage"])
+
+    shortfall = max(target - deliveries, 0.0)
+    levers = [{
+        "lever": "Run more BD activities",
+        "detail": f"{round(need_act - activities):,} more activities a year "
+                  f"at today's {enq_rate:.0%} enquiry rate and {conv:.0%} conversion",
+        "units": round(shortfall),
+        "kind": "volume",
+    }]
+    if peer_conv > conv:
+        levers.append({
+            "lever": "Lift conversion to the peer median",
+            "detail": f"{conv:.1%} today vs {peer_conv:.1%} across Grow archetypes "
+                      f"in the {r['hp_belt']} belt",
+            "units": round(enquiries * (peer_conv - conv)),
+            "kind": "efficiency",
+        })
+    cov = float(r["sales_coverage"])
+    if peer_cov > cov and cov > 0:
+        levers.append({
+            "lever": "Close the dealer coverage gap",
+            "detail": f"{cov:.0%} of this archetype is covered vs {peer_cov:.0%} for peers",
+            "units": round(deliveries * ((peer_cov - cov) / cov)),
+            "kind": "coverage",
+        })
+    levers.sort(key=lambda x: -x["units"])
+    levers.append({
+        "lever": "Product fit ceiling",
+        "detail": f"fit is {float(r['product_fit']):.2f}; below {fit_min} no amount of "
+                  f"selling moves this archetype",
+        "units": 0, "kind": "ceiling",
+    })
+
+    return {
+        "archetype_id": archetype_id, "archetype": r["archetype"], "bucket": r["bucket"],
+        "hp_belt": r["hp_belt"], "provenance": "modelled",
+        "current": {"deliveries": round(deliveries), "enquiries": round(enquiries),
+                    "activities": round(activities), "conversion_rate": conv,
+                    "enquiry_rate": enq_rate, "share": share, "demand": round(demand),
+                    "leader": r["leader"], "leader_share": clean(r["leader_share"]),
+                    "sales_coverage": cov, "product_fit": float(r["product_fit"])},
+        "target": {"units": round(target), "default_units": default_units,
+                   "share": target / demand if demand else 0.0,
+                   "enquiries": round(need_enq), "activities": round(need_act),
+                   "delta_deliveries": round(target - deliveries),
+                   "delta_enquiries": round(need_enq - enquiries),
+                   "delta_activities": round(need_act - activities)},
+        "levers": clean(levers),
+    }
+
+
+# ---------------------------------------------------------------- act: one archetype
+
+# A micro-market counts as "within commercial reach" above this dealer-accessibility score.
+# accessibility = exp(-dealer_km / decay), so 0.5 is roughly a dealer within one decay length.
+_REACH = 0.5
+
+
+@lru_cache(maxsize=1)
+def _approval_by_archetype() -> pd.Series:
+    """Mean loan-approval rate per archetype.
+
+    `approval_rate` is a real column on village_features and the pipeline's own conversion
+    identity uses it -- conv = approval_rate x (0.55 + 0.45 x dealer_accessibility)
+    (pipeline/simulate/assets.py). That makes it the one place a "finance access" lever can
+    move a model input rather than a fudge factor.
+    """
+    return _approval_cached(_stamp()).copy()
+
+
+@lru_cache(maxsize=2)
+def _approval_cached(stamp: str) -> pd.Series:
+    v = con().execute("""
+        SELECT v.micro_market_id, avg(f.approval_rate) AS approval, count(*) AS n
+        FROM village_features f JOIN village_micromarket v USING (village_id)
+        GROUP BY 1""").fetchdf()
+    v["archetype_id"] = v["micro_market_id"].map(
+        _current_grain_cached(stamp).set_index("micro_market_id")["archetype_id"])
+    v = v.dropna(subset=["archetype_id"])
+    v["num"] = v["approval"] * v["n"]           # village-count weighted, as the SQL avg was
+    g = v.groupby("archetype_id").agg(num=("num", "sum"), n=("n", "sum"))
+    return g["num"] / g["n"]
+
+
+def _archetype_rivals(archetype_id: str, limit: int = 6) -> list[dict]:
+    """Winnable and at-risk volume by rival inside one archetype.
+
+    cannibal_ext is village x SKU (3.9M rows), so the district pre-filter matters: it cuts
+    the scan to the archetype's own districts before the village join.
+    """
+    # The membership comes from the taxonomy in force, registered as a frame, so this still
+    # finds the villages of an archetype the mart has never seen.
+    g = _current_grain()
+    mm = g.loc[g["archetype_id"] == archetype_id, ["micro_market_id", "district_id"]]
+    con().register("mm_sel", mm)
+    try:
+        return clean(con().execute("""
+            WITH vv AS (SELECT v.village_id FROM village_micromarket v
+                        JOIN mm_sel USING (micro_market_id))
+            SELECT c.closest_rival AS rival,
+                   sum(c.competitor_units) AS their_units,
+                   sum(c.winnable_units) AS winnable,
+                   sum(c.at_risk_units) AS at_risk,
+                   sum(c.sonalika_units) AS our_units
+            FROM cannibal_ext c JOIN vv USING (village_id)
+            WHERE c.district_id IN (SELECT DISTINCT district_id FROM mm_sel)
+            GROUP BY 1 ORDER BY winnable DESC LIMIT ?
+        """, [limit]).fetchdf().to_dict("records"))
+    finally:
+        con().unregister("mm_sel")
+
+
+def _archetype_row(archetype_id: str, line: str = "implements") -> pd.Series:
+    a = _plan_buckets(line)
+    row = a[a["archetype_id"] == archetype_id]
+    if row.empty:
+        raise HTTPException(404, "archetype not found")
+    return row.iloc[0]
+
+
+@app.get("/api/act/summary")
+def act_summary(archetype_id: str, product: str = "implements"):
+    """Everything the tool knows about one archetype, in one call.
+
+    The heavy time series stay where they already live -- the client calls
+    /api/archetype-ucm/uplift for the driver split and /api/plan/forecast for the 6-month
+    path -- so this endpoint is one round of small mart reads.
+    """
+    line = _line(product)
+    r = _archetype_row(archetype_id, line)
+    prof = q("SELECT * FROM cluster_profiles WHERE archetype_id = ?", [archetype_id])
+    mart = q("SELECT * FROM archetypes_mart WHERE archetype_id = ?", [archetype_id])
+
+    # Filtered in pandas against the labels in force, not by SQL against the mart: after a
+    # zone is split on Configure the archetype id is new and the mart has no rows for it.
+    g = _current_mm()
+    g = g[g["archetype_id"] == archetype_id]
+    mm = pd.DataFrame([{
+        "tiv": g["tiv"].sum(), "mean_hp": g["mean_hp"].mean(),
+        "irrigation": g["irrigation_reliability"].mean(),
+        **{c: g[c].sum() for c in ("hp_20_35", "hp_35_45", "hp_45_60", "hp_60_plus")},
+        **{n: g[f"crop_{n}_share"].mean() for n in
+           ("wheat", "rice", "cotton", "soybean", "sugarcane")},
+        "rain_mm": g["rain_normal_mm"].mean(), "temp": g["mean_temp"].mean(),
+    }])
+
+    go = _current_grain()
+    go = go[go["archetype_id"] == archetype_id]
+    ops = pd.DataFrame([{
+        "accessibility": go["dealer_accessibility"].mean(),
+        "service_km": go["service_distance_km"].mean(),
+        "tiv_in_reach": go.loc[go["dealer_accessibility"] >= _REACH, "tiv"].sum(),
+        "tiv_total": go["tiv"].sum(), "n_mm": len(go),
+        "n_districts": go["district_id"].nunique(),
+    }])
+
+    states = clean(go.groupby("state")["tiv"].sum().round().sort_values(ascending=False)
+                     .reset_index().to_dict("records"))
+    players = _archetype_players()
+    board = players[players["archetype_id"] == archetype_id].sort_values("share", ascending=False)
+
+    return clean({
+        "archetype_id": archetype_id,
+        "identity": {
+            "name": r["archetype"], "base_name": r["base_name"], "hp_belt": r["hp_belt"],
+            "bucket": r["bucket"], "diagnosis": r["diagnosis"],
+            "defining": prof[0].get("defining_features") if prof else None,
+            # Zone, tier and crop come from the taxonomy in force, not the mart, so they are
+            # still right for an archetype the client created by splitting a zone.
+            "zone": g["zone"].iloc[0] if len(g) else None,
+            "zone_name": g["zone_name"].iloc[0] if len(g) else None,
+            "subzone_id": r["subzone_id"], "subzone": r["subzone"],
+            "lgp": g["lgp"].iloc[0] if len(g) else None,
+            "tiv_tier": g["tiv_tier"].iloc[0] if len(g) else None,
+            "top_crops": g["dominant_crop"].mode().iloc[0] if len(g) else None,
+            "states": states, "n_districts": int(ops["n_districts"].iloc[0]),
+        },
+        "size": {
+            "micromarkets": int(r["n_micromarkets"]), "villages": int(r["n_villages"]),
+            "tiv": round(float(r["tiv"])), "demand_units": round(float(r["potential_units_yr"])),
+            "demand_value_inr": mart[0].get("potential_value_inr") if mart else None,
+        },
+        "position": {
+            "share": float(r["avg_sonalika_share"]), "leader": r["leader"],
+            "leader_share": clean(r["leader_share"]), "rank": clean(r["own_rank"]),
+            "product_fit": float(r["product_fit"]), "cracked_pct": float(r["cracked_pct"]),
+            "sales_coverage": float(r["sales_coverage"]),
+            "service_coverage": float(r["service_coverage"]),
+            "tiv_in_reach": round(float(ops["tiv_in_reach"].iloc[0])),
+            "accessibility": float(ops["accessibility"].iloc[0]),
+            "service_km": float(ops["service_km"].iloc[0]),
+            "approval_rate": clean(_approval_by_archetype().get(archetype_id)),
+        },
+        "funnel": {
+            "activities": int(r["activities_yr"]), "enquiries": int(r["enquiries_yr"]),
+            "deliveries": int(r["deliveries_yr"]), "sales_units": int(r["sonalika_sales_units"]),
+            "conversion_rate": float(r["conversion_rate"]),
+            "enquiry_rate": float(r["enquiries_yr"]) / max(float(r["activities_yr"]), 1),
+        },
+        "agro": clean(mm.to_dict("records")[0] if len(mm) else {}),
+        "leaderboard": clean(board[["player", "share"]].to_dict("records")),
+        "rivals": _archetype_rivals(archetype_id),
+        "provenance": {"definition": "real", "funnel": "modelled", "share": "modelled",
+                       "agro": "real", "network": "real"},
+    })
+
+
+# ---------------------------------------------------------------- act: the playbook
+
+class Assumptions(BaseModel):
+    """Survey-shaped inputs. No survey exists yet, so these are the user's own assumptions --
+    named on screen, and each one moves a specific number rather than a hidden weight."""
+    top_barrier: str = "finance"            # finance | service | awareness | product
+    approval_rate: float | None = None      # 0-1; defaults to the archetype's own mean
+    awareness: float = 0.38                 # 0-1; scales what extra BD activity yields
+    dealer_density_pct: float = 20.0        # the network expansion being priced
+    activity_uplift_pct: float = 25.0       # the BD push being priced
+
+
+class PlaybookReq(BaseModel):
+    archetype_id: str
+    assumptions: Assumptions = Field(default_factory=Assumptions)
+
+
+@app.post("/api/act/playbook")
+def act_playbook(b: PlaybookReq, product: str = "implements"):
+    """Ranked, priced plays for one archetype.
+
+    Every play owns exactly one mechanism, which is what keeps the numbers addable:
+    the network play owns REACH (dealer accessibility), the finance play owns APPROVAL,
+    the activity play owns EFFORT at fixed rates, the conversion play owns whatever
+    execution quality is left after those two, price/promotion owns the UCM's own price and
+    promotion betas, and subsidy owns policy. The rival play is deliberately NOT an addend --
+    it is the ceiling the rest are measured against.
+    """
+    line = _line(product)
+    a = b.assumptions
+    r = _archetype_row(b.archetype_id)
+    mm = con().execute("""
+        SELECT micro_market_id, tiv, dealer_accessibility, deliveries_yr, potential_units_yr,
+               sonalika_share, district, state
+        FROM micromarket_ops WHERE archetype_id = ?""", [b.archetype_id]).fetchdf()
+
+    demand = float(r["potential_units_yr"]) or 1.0
+    deliveries = float(r["deliveries_yr"])
+    enquiries = float(r["enquiries_yr"])
+    share = float(r["avg_sonalika_share"])
+    conv = float(r["conversion_rate"])
+    approval_now = float(_approval_by_archetype().get(b.archetype_id, 0.66))
+    # Default to a modest, stated improvement so the play is priced on first load; the panel
+    # shows both today's rate and the assumed one, so nothing is hidden.
+    approval_new = float(a.approval_rate) if a.approval_rate else min(approval_now + 0.05, 0.95)
+
+    plays: list[dict] = []
+
+    # ---- 1. reach: more dealers -------------------------------------------------------
+    # Density scales distance by (1+dd)^-0.5 and accessibility = exp(-km/decay), so the new
+    # accessibility is the old one raised to that power. A micro-market that crosses _REACH
+    # is newly sellable; one already above it just gets easier to serve.
+    dd = max(a.dealer_density_pct, 0.0) / 100.0
+    acc = mm["dealer_accessibility"].to_numpy()
+    acc_new = np.power(np.clip(acc, 1e-6, 1.0), (1 + dd) ** -0.5)
+    crossed = (acc < _REACH) & (acc_new >= _REACH)
+    covered = acc >= _REACH
+    tiv_reached = float(mm.loc[crossed, "tiv"].sum())
+    new_demand = float((mm.loc[crossed, "potential_units_yr"] * share).sum())
+    access_lift = (0.55 + 0.45 * acc_new) / (0.55 + 0.45 * acc) - 1
+    easier = float((mm["deliveries_yr"].to_numpy() * access_lift * covered).sum())
+    if tiv_reached > 0 or easier > 0:
+        plays.append({
+            "play": f"Expand the dealer network {round(a.dealer_density_pct)}%",
+            "owns": "reach",
+            "detail": f"{int(crossed.sum())} micro-markets cross into commercial reach, "
+                      f"{fmt_units(tiv_reached)} tractors with them; the rest get easier to serve",
+            "units": round(new_demand + easier), "tiv_reached": round(tiv_reached),
+            "confidence": "estimated", "mode": "grow",
+        })
+
+    # ---- 2. approval: finance access --------------------------------------------------
+    # conv = approval x (0.55 + 0.45 x accessibility), so a proportional move in approval is a
+    # proportional move in conversion, and deliveries follow.
+    if approval_new > approval_now:
+        plays.append({
+            "play": f"Lift loan approval to {approval_new:.0%}",
+            "owns": "approval",
+            "detail": f"{approval_now:.0%} today across this archetype's villages; conversion "
+                      f"moves with it one-for-one in the model's own identity",
+            "units": round(deliveries * (approval_new / max(approval_now, 1e-6) - 1)),
+            "tiv_reached": None, "confidence": "estimated", "mode": "grow",
+        })
+
+    # ---- 3. effort: more BD activity at today's rates ---------------------------------
+    # Awareness scales what an extra visit yields; it is the one input with no data proxy
+    # anywhere in the repo, so it is labelled an assumption on screen.
+    up = max(a.activity_uplift_pct, 0.0) / 100.0
+    if up > 0:
+        yield_mult = 0.6 + 0.8 * float(np.clip(a.awareness, 0, 1))
+        plays.append({
+            "play": f"Run {round(a.activity_uplift_pct)}% more BD activities",
+            "owns": "effort",
+            "detail": f"{int(r['activities_yr'] * up):,} more activities a year at today's "
+                      f"{conv:.0%} conversion, scaled by the awareness assumption",
+            "units": round(deliveries * up * yield_mult),
+            "tiv_reached": None, "confidence": "arithmetic", "mode": "grow",
+        })
+
+    # ---- 4. execution quality: whatever peer conversion is left ------------------------
+    peers = _plan_buckets(line)
+    peers = peers[(peers["hp_belt"] == r["hp_belt"]) & (peers["archetype_id"] != b.archetype_id)]
+    peer_conv = float(peers["conversion_rate"].median()) if len(peers) else conv
+    claimed = sum(p["units"] for p in plays if p["owns"] in ("reach", "approval"))
+    residual = enquiries * max(peer_conv - conv, 0.0) - claimed
+    if residual > 0:
+        plays.append({
+            "play": "Close the rest of the conversion gap",
+            "owns": "execution",
+            "detail": f"{conv:.1%} today vs {peer_conv:.1%} across the {r['hp_belt']} belt, "
+                      f"after what reach and finance already explain",
+            "units": round(residual), "tiv_reached": None, "confidence": "arithmetic",
+            "mode": "grow",
+        })
+
+    # ---- 5. price and promotion, from this archetype's own betas ----------------------
+    betas = q("""SELECT regressor, beta, se, significant, sign_ok FROM ucm_arch_betas
+                 WHERE archetype_id = ? AND regressor IN ('price_drop_pct', 'is_promotion')""",
+              [b.archetype_id])
+    for bt in betas:
+        if not bt["significant"] or not bt["sign_ok"]:
+            continue
+        # A window, not the whole year: a 5% price action held for a quarter, or a
+        # month-long promotion. Pricing either at 365 days would be a fantasy.
+        move, days, label = ((5.0, 90, "Run a 5% price action for a quarter")
+                             if bt["regressor"] == "price_drop_pct"
+                             else (1.0, 30, "Run a month-long promotion"))
+        units_yr = float(bt["beta"]) * move * days
+        if units_yr <= 0:
+            continue
+        plays.append({
+            "play": label, "owns": "price",
+            "detail": f"this archetype's own estimated beta ({bt['beta']:.2f} units/day per "
+                      f"unit of driver) over {days} days, fitted on simulated daily history",
+            "units": round(units_yr), "tiv_reached": None, "confidence": "estimated",
+            "mode": "grow",
+        })
+
+    # ---- 6. subsidy, where the state rate is real and high ----------------------------
+    sub = q("""
+        WITH st AS (SELECT state, sum(tiv) AS w FROM micromarket_ops
+                    WHERE archetype_id = ? GROUP BY 1)
+        SELECT s.state, avg(s.subsidy_pct) AS rate, max(s.provenance) AS provenance, max(st.w) AS w
+        FROM subsidy s JOIN st USING (state) GROUP BY 1 ORDER BY w DESC""", [b.archetype_id])
+    if sub and (sub[0]["rate"] or 0) >= 35:
+        prov = sub[0]["provenance"]
+        plays.append({
+            "play": f"Push the {sub[0]['rate']:.0f}% subsidy in {sub[0]['state']}",
+            "owns": "policy",
+            "detail": f"state equipment subsidy on this archetype's SKUs "
+                      f"({'real rate' if prov == 'real' else 'national SMAM proxy'}); "
+                      f"scheme-linked demand runs about 8% above baseline",
+            "units": round(deliveries * 0.08), "tiv_reached": None, "mode": "grow",
+            "confidence": "arithmetic" if prov == "real" else "proxy",
+        })
+
+    # ---- the ceiling, and the product stop -------------------------------------------
+    rivals = _archetype_rivals(b.archetype_id, limit=4)
+    winnable = float(sum(x["winnable"] or 0 for x in rivals))
+    at_risk = float(sum(x["at_risk"] or 0 for x in rivals))
+
+    if r["bucket"] == "No product fit":
+        plays = [{
+            "play": "Fix the product before spending on selling",
+            "owns": "product",
+            "detail": f"product fit is {float(r['product_fit']):.0%}, below the floor. "
+                      f"At peer share this archetype would be worth "
+                      f"{fmt_units(demand * 0.10)} units a year — that is the prize for an "
+                      f"adapted {r['hp_belt']} product, not for more calls",
+            "units": 0, "tiv_reached": None, "confidence": "arithmetic", "mode": "stop",
+        }]
+    if r["bucket"] == "Defend" and at_risk > 0 and rivals:
+        plays.append({
+            "play": f"Hold the line against {rivals[0]['rival']}",
+            "owns": "retention",
+            "detail": f"{fmt_units(at_risk)} units sit in contests where a rival is closest and "
+                      f"our lead is narrow; service coverage here is "
+                      f"{float(r['service_coverage']):.0%}, and service is what defends a "
+                      f"stronghold rather than new selling",
+            "units": round(at_risk), "tiv_reached": None, "confidence": "estimated",
+            "mode": "protect",
+        })
+
+    # Protect plays lead in a Defend archetype -- the volume already ours is worth more than
+    # the volume we might add -- but they are never summed into the growth total.
+    plays.sort(key=lambda p: ((0 if p.get("mode") == "protect" else 1)
+                              if r["bucket"] == "Defend" else 0, -p["units"]))
+    # Rank nudge only -- the barrier assumption never touches a unit figure.
+    barrier_owner = {"finance": "approval", "service": "reach",
+                     "awareness": "effort", "product": "product"}.get(a.top_barrier)
+    if barrier_owner:
+        plays.sort(key=lambda p: (0 if p.get("mode") == "protect" and r["bucket"] == "Defend"
+                                  else 1 if p["owns"] == barrier_owner else 2, -p["units"]))
+
+    raw = float(sum(p["units"] for p in plays if p.get("mode") == "grow"))
+    headroom = max(demand * (1 - share), 0.0)
+    # Headroom is the only hard ceiling: we cannot sell more than the archetype's unclaimed
+    # demand. `winnable` is narrower -- volume in contests where a rival is closest and
+    # beatable -- so it is reported as context, not used to cap plays that grow the category
+    # for us rather than take from one named rival.
+    capped = min(raw, headroom)
+    for p in plays:
+        p["share_pts"] = round(p["units"] / demand * 100, 2)
+
+    return clean({
+        "archetype_id": b.archetype_id, "bucket": r["bucket"], "archetype": r["archetype"],
+        "hp_belt": r["hp_belt"], "provenance": "modelled",
+        "situation": {
+            "share": share, "leader": r["leader"], "leader_share": clean(r["leader_share"]),
+            "product_fit": float(r["product_fit"]), "demand": round(demand),
+            "deliveries": round(deliveries), "sales_coverage": float(r["sales_coverage"]),
+            "approval_rate": approval_now, "conversion_rate": conv,
+        },
+        "plays": plays,
+        "total": {"raw_units": round(raw), "capped_units": round(capped),
+                  "headroom": round(headroom), "winnable_ceiling": round(winnable),
+                  "capped_by": "headroom" if capped < raw else None},
+        "rivals": rivals, "at_risk": round(at_risk), "winnable": round(winnable),
+        "assumptions_used": a.model_dump(),
+    })
+
+
 # ---------------------------------------------------------------- agro-climate (REAL)
 
 @app.get("/api/agroclimate")
@@ -1014,11 +2027,108 @@ _OPS_METRICS = {"sonalika_sales_units", "tiv", "sonalika_share", "potential_unit
                 "activities_yr", "enquiries_yr", "deliveries_yr", "product_fit"}
 
 
+# ---------------------------------------------------------------- review: shared rollups
+
+@lru_cache(maxsize=1)
+def _demographics() -> pd.DataFrame:
+    """Village demographics rolled up to micro-market grain.
+
+    There is no demographic mart above village level, so this is the rollup: counts sum,
+    rates are weighted by whatever they are a rate *of* -- holding size by number of
+    holdings, income by households -- because a plain mean would let a 20-household hamlet
+    outvote a 700-household town.
+
+    Provenance is `allocated`, and the panel says so: the state totals are published
+    (Census 2011 population, the state x tier holding mix), the split down to a village is
+    modelled.
+    """
+    return con().execute("""
+        SELECT vm.micro_market_id,
+               sum(f.rural_population)                                        AS population,
+               sum(f.households)                                             AS households,
+               sum(f.n_holdings)                                             AS holdings,
+               sum(f.avg_holding_ha * f.n_holdings) / nullif(sum(f.n_holdings), 0)
+                                                                             AS avg_holding_ha,
+               sum(f.small_marginal_share * f.n_holdings) / nullif(sum(f.n_holdings), 0)
+                                                                             AS small_marginal_share,
+               sum(f.large_holding_share * f.n_holdings) / nullif(sum(f.n_holdings), 0)
+                                                                             AS large_holding_share,
+               sum(f.farm_income_inr * f.households) / nullif(sum(f.households), 0)
+                                                                             AS farm_income_inr,
+               sum(f.net_sown_ha)                                            AS net_sown_ha,
+               sum(f.tractors)                                               AS tractors,
+               sum(f.fleet_mean_age * f.tractors) / nullif(sum(f.tractors), 0)
+                                                                             AS fleet_mean_age,
+               sum(f.approval_rate * f.households) / nullif(sum(f.households), 0)
+                                                                             AS approval_rate,
+               count(*)                                                      AS villages
+        FROM village_micromarket vm
+        JOIN village_features f USING (village_id)
+        GROUP BY 1
+    """).fetchdf().set_index("micro_market_id")
+
+
+@lru_cache(maxsize=1)
+def _district_rivals() -> dict:
+    """Top branded rival per district, from the same table the archetype column uses.
+
+    There are two tables that could answer this and they disagree: `player_shares` (district
+    x category x player, what `_top_branded_rival()` reads) names Landforce in 61 districts,
+    while the modal `closest_rival` in `competitive_landscape` names Shaktiman in 55 -- they
+    agree on 24 of 114. Both are the same choice model with different seeds, and
+    argmax-of-mean-share is simply not the same statistic as mode-of-argmax when five players
+    sit within two points of each other.
+
+    So there is one source, and it is the one already on screen elsewhere: a micro-market
+    inherits its district's rival, badged district grain, because the source *is* district
+    grain. The alternative is a micro-market naming Shaktiman inside an archetype that names
+    Landforce, on two tabs of the same tool.
+    """
+    """Top branded rival per district, TIV-weighted across the nine categories."""
+    d = con().execute("""
+        WITH w AS (SELECT district_id, sum(tiv) AS tiv FROM micromarket_ops GROUP BY 1)
+        SELECT ps.district_id, ps.player, avg(ps.share) AS share
+        FROM player_shares ps JOIN w USING (district_id)
+        WHERE ps.player NOT IN ('Local', 'Sonalika')
+        GROUP BY 1, 2
+    """).fetchdf()
+    top = (d.sort_values("share", ascending=False)
+            .drop_duplicates("district_id").set_index("district_id"))
+    return {k: {"rival": v["player"], "rival_share": float(v["share"])}
+            for k, v in top.to_dict("index").items()}
+
+
+def _funnel(g: pd.DataFrame) -> dict:
+    """The BD funnel for a set of micro-markets.
+
+    `deliveries_yr` and `sonalika_sales_units` are the same column (operations.py sets one
+    from the other), so the funnel stops at deliveries and reports sales as that step's
+    value -- drawing both would show a fourth bar at a fictional 100% conversion.
+    """
+    demand = float(g["potential_units_yr"].sum())
+    act = float(g["activities_yr"].sum())
+    enq = float(g["enquiries_yr"].sum())
+    dlv = float(g["deliveries_yr"].sum())
+    tiv = float(g["tiv"].sum())
+    return {
+        "activities": round(act), "enquiries": round(enq), "deliveries": round(dlv),
+        "sales_units": round(dlv), "demand": round(demand), "tiv": round(tiv),
+        "sales_value_inr": float(g["sonalika_sales_value_inr"].sum()),
+        "share": (dlv / demand) if demand else None,
+        "enquiry_rate": (enq / act) if act else None,
+        "conversion_rate": (dlv / enq) if enq else None,
+        "product_fit": float((g["product_fit"] * g["tiv"]).sum() / tiv) if tiv else None,
+        "sales_effort": float((g["sales_effort"] * g["tiv"]).sum() / tiv) if tiv else None,
+        "unserved": round(demand - dlv),
+    }
+
+
 @app.get("/api/review/micromarkets")
 def review_micromarkets(district: str | None = None, archetype_id: str | None = None,
-                        metric: str = "sonalika_sales_units", limit: int = 700):
+                        metric: str = "sonalika_sales_units", limit: int = 700,
+                        product: str = "implements"):
     metric = metric if metric in _OPS_METRICS else "sonalika_sales_units"
-    df = con().execute("SELECT * FROM micromarket_ops").fetchdf()
+    df = _current_grain(_line(product))
     if district:
         df = df[df["district_id"] == district]
     if archetype_id:
@@ -1028,32 +2138,204 @@ def review_micromarkets(district: str | None = None, archetype_id: str | None = 
 
 
 @app.get("/api/review/micromarket/{mm_id}")
-def review_micromarket(mm_id: str):
-    df = con().execute("SELECT * FROM micromarket_ops WHERE micro_market_id = ?",
-                       [mm_id]).fetchdf()
+def review_micromarket(mm_id: str, product: str = "implements"):
+    line = _line(product)
+    g = _current_grain(line)
+    df = g[g["micro_market_id"] == mm_id]
     return {"micromarket": clean(df.to_dict("records"))[0] if len(df) else None}
 
 
+@app.get("/api/review/profile")
+def review_profile(level: str, id: str, product: str = "implements"):
+    """One panel for either grain: how we are performing here, and what explains it.
+
+    Define's profile answers "what kind of place is this". This answers the next question,
+    and carries the three things that decide it: the sales funnel, who farms here, and what
+    grows here. Same drill and the same click, so the two stages read as one motion.
+
+    Demand stays on this screen where it comes off Define's: market share IS sales divided
+    by demand, and the whole funnel is sized off it -- without it the panel can show sales
+    but not whether they are any good.
+    """
+    line = _line(product)
+    if level not in ("district", "micromarket"):
+        raise HTTPException(400, "level must be district or micromarket")
+
+    grain = _current_grain(line)
+    demo = _demographics()
+    if level == "micromarket":
+        g = grain[grain["micro_market_id"] == id]
+        if g.empty:
+            raise HTTPException(404, "micro-market not found")
+        r = g.iloc[0]
+        district_id, name = r["district_id"], f"{r['district']} · {id}"
+        members = [id]
+        competitor = {**_district_rivals().get(r["district_id"],
+                                               {"rival": None, "rival_share": None}),
+                      "leader": "Local", "grain": "district"}
+        archetype = {"id": r["archetype_id"], "name": r["archetype"],
+                     "diagnosis": r["diagnosis"], "hp_belt": r["hp_belt"],
+                     "tiv_tier": r["tiv_tier"]}
+        coverage = {"sales": float(r["dealer_accessibility"]),
+                    "service": float(r["service_index"]),
+                    "service_km": float(r["service_distance_km"])}
+    else:
+        g = grain[grain["district_id"] == id]
+        if g.empty:
+            raise HTTPException(404, "district not found")
+        district_id, name = id, g["district"].iloc[0]
+        members = g["micro_market_id"].tolist()
+        competitor = {**_district_rivals().get(id, {"rival": None, "rival_share": None}),
+                      "leader": "Local", "grain": "district"}
+        archetype = {"id": None,
+                     "name": (g["archetype"].mode().iloc[0] if len(g["archetype"].mode()) else None),
+                     "diagnosis": (g["diagnosis"].mode().iloc[0]
+                                   if len(g["diagnosis"].mode()) else None),
+                     "hp_belt": (g["hp_belt"].mode().iloc[0] if len(g["hp_belt"].mode()) else None),
+                     "tiv_tier": None}
+        coverage = {"sales": float(g["dealer_accessibility"].mean()),
+                    "service": float(g["service_index"].mean()),
+                    "service_km": float(g["service_distance_km"].mean())}
+
+    d = demo.reindex(members).sum(numeric_only=True)
+    holds = float(d.get("holdings") or 0)
+    hh = float(d.get("households") or 0)
+    sown = float(d.get("net_sown_ha") or 0)
+    trac = float(d.get("tractors") or 0)
+    sub = demo.reindex(members)
+
+    def _w(col: str, weight: str) -> float | None:
+        """Re-weight a rate that was already averaged inside each micro-market."""
+        wt = sub[weight].fillna(0)
+        return float((sub[col].fillna(0) * wt).sum() / wt.sum()) if wt.sum() else None
+
+    demographics = {
+        "population": round(float(d.get("population") or 0)),
+        "households": round(hh), "villages": int(d.get("villages") or 0),
+        "holdings": round(holds), "net_sown_ha": round(sown),
+        "avg_holding_ha": _w("avg_holding_ha", "holdings"),
+        "small_marginal_share": _w("small_marginal_share", "holdings"),
+        "large_holding_share": _w("large_holding_share", "holdings"),
+        # farm_income_inr is per HOLDING per year. The mart's income_per_ha divides it by the
+        # whole village's sown area instead of that holding's, which is out by a factor of
+        # n_holdings (~176x), so it is deliberately not carried here.
+        "farm_income_inr": _w("farm_income_inr", "households"),
+        "tractors": round(trac),
+        "tractor_density": (trac / sown * 1000) if sown else None,
+        "fleet_mean_age": _w("fleet_mean_age", "tractors"),
+        "approval_rate": _w("approval_rate", "households"),
+    }
+
+    # dominant_crop lives on the micromarkets mart, not the ops one.
+    mm = _current_mm()
+    mmg = mm[mm["micro_market_id"].isin(members)]
+    dominant_crop = (mmg["dominant_crop"].mode().iloc[0]
+                     if len(mmg) and len(mmg["dominant_crop"].mode()) else None)
+    irrigation = float(mmg["irrigation_reliability"].mean()) if len(mmg) else None
+
+    agro = q("""SELECT district, state, mean_temp, temp_is_allocated, rain_normal_mm,
+                       rain_departure_pct, total_crop_area_lha, top_crops,
+                       crop_rice_share, crop_wheat_share, crop_maize_share,
+                       crop_gram_share, crop_bajra_share, crop_jowar_share
+                FROM agroclimate WHERE district_id = ?""", [district_id])
+    # A crop the DES extract reports as zero here is a crop not grown here, and an empty bar
+    # for it three lines above "most-grown: cotton" reads as a broken chart rather than as
+    # two sources. Only crops with area in THIS district reach the panel.
+    if agro:
+        agro = [{k: v for k, v in agro[0].items()
+                 if not (k.startswith("crop_") and not v)}]
+    soil = q("""SELECT aesr_code, soil_type, climate, lgp_days, region, sub_region
+                FROM district_aesr WHERE district_id = ?""", [district_id])
+    geo = q("""SELECT zone, zone_name, subzone_id, subzone, lgp FROM micromarkets
+               WHERE district_id = ? LIMIT 1""", [district_id])
+    dealers = q("""SELECT product_line, own_dealers, competitor_dealers, n_oems
+                   FROM dealer_network WHERE district_id = ?""", [district_id])
+
+    return clean({
+        "level": level, "id": id, "name": name, "district_id": district_id,
+        "scope": {"micromarkets": int(len(g)), "villages": int(g["n_villages"].sum()),
+                  "state": g["state"].iloc[0],
+                  "mean_hp": round(float(g["mean_hp"].mean()), 1),
+                  "lon": float(g["lon"].mean()), "lat": float(g["lat"].mean())},
+        "sales": _funnel(g),
+        "demographics": demographics,
+        "agro": (agro[0] if agro else {}),
+        "soil": (soil[0] if soil else {}),
+        "geography": (geo[0] if geo else {}),
+        "irrigation": irrigation,
+        "archetype": archetype,
+        "competitor": competitor,
+        "coverage": coverage,
+        "dealers": dealers,
+        # Two crop facts from two sources, kept apart on purpose: the DES foodgrain areas
+        # above are real but cover only foodgrains, while dominant_crop is modelled and does
+        # cover cotton, soybean and sugarcane. Merged into one chart they would say cotton is
+        # not grown in Punjab, which is false.
+        "dominant_crop": dominant_crop,
+        "provenance": {
+            "sales": "modelled · ITL pending",
+            "demographics": ("allocated — published state totals (Census 2011 population, "
+                             "the state x tier holding mix) split down by model"),
+            "agro": "real · IMD/DES",
+            "soil": "real · NBSS-ICAR AESR",
+            "competitor": "modelled",
+            "grain": ("district measurements shown at micro-market grain"
+                      if level == "micromarket" else "district grain"),
+        },
+    })
+
+
 @app.get("/api/review/coverage")
-def review_coverage(product: str = "implements", type: str = "sales"):
-    """Network coverage per archetype: Sonalika vs rival OEMs, sales (real dealers) and
-    service (dummy). pct_covered = share of an archetype's micro-markets whose district has
-    at least one Sonalika dealer (real for implements)."""
+def review_coverage(type: str = "sales", product: str = "implements"):
+    """Network coverage per archetype and per district, with the rival we are up against.
+
+    Two very different kinds of number share this response and the provenance block says
+    which is which. The dealer COUNTS, the OEM list and pct_covered are real, from the
+    dealer locator. The coverage INDICES are not: `dealer_accessibility` is an exponential
+    decay off a simulated dealer point set, and `service_index` is that discounted and
+    noised because ITL has not shared the service master. The endpoint used to badge the
+    whole sales response "real", which read as a claim about the coverage bars.
+
+    pct_covered = share of an archetype's micro-markets whose district has at least one
+    Sonalika dealer.
+    """
     net = con().execute(
         "SELECT district_id, own_dealers FROM dealer_network WHERE product_line = ?",
         [product]).fetchdf()
     covered = set(net.loc[net["own_dealers"] > 0, "district_id"])
-    mmd = con().execute("SELECT archetype_id, district_id FROM micromarket_ops").fetchdf()
+    line = _line(product)
+    grain = _current_grain(line)
+    mmd = grain[["archetype_id", "district_id"]].copy()
     mmd["cov"] = mmd["district_id"].isin(covered)
     pct = mmd.groupby("archetype_id")["cov"].mean().to_dict()
 
-    arch = con().execute(
-        """SELECT archetype_id, base_name, hp_belt, subzone_id, subzone, n_micromarkets,
-                  diagnosis, sales_coverage, service_coverage, avg_sonalika_share
-           FROM archetype_ops""").fetchdf()
+    arch = _current_ops(line)[["archetype_id", "base_name", "hp_belt", "subzone_id", "subzone",
+                           "n_micromarkets", "diagnosis", "sales_coverage", "service_coverage",
+                           "avg_sonalika_share"]]
     arch["coverage"] = arch["service_coverage" if type == "service" else "sales_coverage"]
     arch["pct_covered"] = arch["archetype_id"].map(pct).fillna(0.0)
+    # Same top-branded-rival convention the Define archetype table uses, so the two screens
+    # never name a different competitor for the same archetype.
+    rival = _top_branded_rival()
+    arch["rival"] = arch["archetype_id"].map(lambda a: rival.get(a, {}).get("rival"))
+    arch["rival_share"] = arch["archetype_id"].map(lambda a: rival.get(a, {}).get("rival_share"))
     arch = arch.sort_values("coverage")           # worst-covered first = the gap
+
+    # District-grain coverage for the map: the indices averaged over each district's
+    # micro-markets, joined to the real dealer counts. Districts the dealer file does not
+    # cover at all -- every Punjab district, for implements -- are flagged rather than
+    # drawn as zero coverage, which would read as "we are absent" instead of "we cannot say".
+    dg = grain.groupby(["district_id", "district", "state"]).agg(
+        sales=("dealer_accessibility", "mean"), service=("service_index", "mean"),
+        micromarkets=("micro_market_id", "size"), demand=("potential_units_yr", "sum"),
+        lon=("lon", "mean"), lat=("lat", "mean"),
+    ).reset_index()
+    nd = con().execute("""SELECT district_id, own_dealers, competitor_dealers, n_oems
+                          FROM dealer_network WHERE product_line = ?""", [product]).fetchdf()
+    dg = dg.merge(nd, on="district_id", how="left")
+    dg["has_dealer_data"] = dg["own_dealers"].notna()
+    dg["coverage"] = dg["service" if type == "service" else "sales"]
+    districts = clean(dg.to_dict("records"))
 
     def _sum(like_not: bool):
         op = "NOT LIKE" if like_not else "LIKE"
@@ -1065,20 +2347,34 @@ def review_coverage(product: str = "implements", type: str = "sales"):
                 FROM dealer_by_oem WHERE product_line = ? AND lower(oem) NOT LIKE '%sonalika%'
                 GROUP BY oem ORDER BY dealers DESC LIMIT 6""", [product])
     return {"product_line": product, "type": type,
-            "provenance": "real" if type == "sales" else "simulated",
+            "provenance": {
+                "dealers": "real · dealer locator",
+                "coverage": ("modelled · ITL service master pending" if type == "service"
+                             else "modelled · distance decay on a simulated dealer network"),
+                "rival": "modelled",
+            },
             "own_dealers": _sum(False), "competitor_dealers": _sum(True),
+            "covered_states": sorted(nd.merge(dg[["district_id", "state"]], on="district_id")
+                                       ["state"].unique().tolist()),
+            "districts": districts,
             "archetypes": clean(arch.to_dict("records")), "oems": oems}
 
 
 @app.get("/api/review/archetypes")
-def review_archetypes():
-    rows = q("SELECT * FROM archetype_ops ORDER BY potential_units_yr DESC")
-    diag = q("""SELECT diagnosis, count(*) AS archetypes, sum(n_micromarkets) AS micromarkets,
-                       sum(potential_units_yr) AS demand, sum(sonalika_sales_units) AS sales
-                FROM archetype_ops GROUP BY diagnosis ORDER BY demand DESC""")
-    tot = q("""SELECT sum(sonalika_sales_units) AS sales, sum(activities_yr) AS activities,
-                      sum(enquiries_yr) AS enquiries, sum(deliveries_yr) AS deliveries,
-                      sum(potential_units_yr) AS demand FROM archetype_ops""")[0]
+def review_archetypes(product: str = "implements"):
+    line = _line(product)
+    ops = _current_ops(line)
+    rows = clean(ops.to_dict("records"))
+    d = ops.groupby("diagnosis").agg(archetypes=("archetype_id", "size"),
+                                     micromarkets=("n_micromarkets", "sum"),
+                                     demand=("potential_units_yr", "sum"),
+                                     sales=("sonalika_sales_units", "sum"))
+    diag = clean(d.sort_values("demand", ascending=False).reset_index().to_dict("records"))
+    tot = clean({"sales": int(ops["sonalika_sales_units"].sum()),
+                 "activities": int(ops["activities_yr"].sum()),
+                 "enquiries": int(ops["enquiries_yr"].sum()),
+                 "deliveries": int(ops["deliveries_yr"].sum()),
+                 "demand": int(ops["potential_units_yr"].sum())})
     return {"provenance": "simulated", "archetypes": rows,
             "diagnosis": diag, "totals": tot}
 
@@ -1566,8 +2862,9 @@ def villages(state: str | None = None, district: str | None = None,
 
 
 @app.get("/api/villages/summary")
-def villages_summary(state: str | None = None, district: str | None = None):
-    where, p = ["1=1"], []
+def villages_summary(state: str | None = None, district: str | None = None,
+                     product: str = "implements"):
+    where, p = ["product_line = ?"], [_line(product)]
     if state:
         where.append("state = ?"); p.append(state)
     if district:
@@ -1579,19 +2876,19 @@ def villages_summary(state: str | None = None, district: str | None = None):
                                 sum(headroom) headroom,
                                 avg(dealer_distance_km) avg_km,
                                 avg(attach_rate) "attach"
-                         FROM village_insights WHERE {w}
+                         FROM village_insights_pl WHERE {w}
                          GROUP BY 1 ORDER BY units DESC""", p),
         "archetypes": q(f"""SELECT archetype, count(*) villages,
                                    sum(potential_units_yr) "units", sum(headroom) headroom,
                                    avg(attach_rate) "attach", avg(opportunity_score) opp
-                            FROM village_insights WHERE {w}
+                            FROM village_insights_pl WHERE {w}
                             GROUP BY 1 ORDER BY units DESC""", p),
         "micro": q(f"""SELECT micro_id, archetype, count(*) villages,
                               sum(potential_units_yr) "units", sum(headroom) headroom,
                               avg(opportunity_score) opp, avg(dealer_distance_km) avg_km,
                               avg(attach_rate) "attach", mode(action_segment) main_action,
                               mode(top_sku) top_sku
-                       FROM village_insights WHERE {w}
+                       FROM village_insights_pl WHERE {w}
                        GROUP BY 1,2 ORDER BY opp DESC""", p),
     }
 
@@ -1618,24 +2915,26 @@ def village_insight(village_id: str):
 
 
 @app.get("/api/kpis")
-def kpis(state: str | None = None):
+def kpis(state: str | None = None, product: str = "implements"):
     """The executive KPI set. One call, everything the summary tiles need."""
-    where, p = ([], [])
+    line = _line(product)
+    where, p = (["i.product_line = ?"], [line])
     if state:
         where.append("i.state = ?"); p.append(state)
-    w = (" WHERE " + " AND ".join(where)) if where else ""
+    w = " WHERE " + " AND ".join(where)
     core = q(f"""SELECT count(*) villages, sum(potential_units_yr) demand_units,
                         sum(potential_value_inr) demand_value,
                         sum(headroom) unserved_units, sum(addressable) addressable,
                         sum(owned) "owned", avg(attach_rate) attach_rate,
                         avg(dealer_distance_km) avg_dealer_km,
                         sum(tractors) tractors
-                 FROM village_insights i{w}""", p)[0]
+                 FROM village_insights_pl i{w}""", p)[0]
     acts = q(f"""SELECT action_segment, count(*) villages, sum(potential_units_yr) "units",
                         sum(headroom) headroom
-                 FROM village_insights i{w} GROUP BY 1""", p)
+                 FROM village_insights_pl i{w} GROUP BY 1""", p)
     repl = q(f"""SELECT sum(s.new_units_yr) new_units, sum(s.replacement_units_yr) repl_units
-                 FROM village_sku s JOIN village_insights i USING (village_id){w}""", p)[0]
+                 FROM village_sku s JOIN village_insights_pl i USING (village_id, product_line)
+                 {w}""", p)[0]
     conv = next((a for a in acts if a["action_segment"] == "Convert now"), {})
     acc = next((a for a in acts if a["action_segment"] == "Build access"), {})
     pen = core["owned"] / core["addressable"] if core["addressable"] else 0

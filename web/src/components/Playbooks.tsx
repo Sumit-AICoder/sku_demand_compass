@@ -4,7 +4,8 @@ import { useStore } from '../lib/store'
 import { Card, Async, useAsync } from './common'
 
 /**
- * DEVELOP stage — archetype-level commercial playbooks.
+ * ACT stage, superseded — the original Develop playbook, kept routable behind the
+ * hidden flag in App.tsx while ActPlaybook.tsx carries the live version.
  *
  * Per the client brief, playbooks translate primary-survey root causes into
  * interventions. The survey (purchase drivers, brand perception, switching triggers,

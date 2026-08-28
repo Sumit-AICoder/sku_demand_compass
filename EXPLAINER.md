@@ -61,8 +61,9 @@ derived groupings that most of the tool actually runs on:
 
 - **Micro-market** — ~4–5 neighbouring villages grouped by proximity + agro-climate. The
   smallest unit that's commercially actionable.
-- **Archetype** — a cross-product of *NARP agro-climatic sub-zone* × *TIV tier* × *HP belt*.
-  Micro-markets that behave alike, regardless of where they sit on the map.
+- **Archetype** — a cross-product of *agro-climatic zone* × *TIV tier* × *HP belt*, named
+  by the crop most grown in it. Micro-markets that behave alike, regardless of where they
+  sit on the map. The categories are editable on **Define → Configure**.
 
 **TIV** = Total Industry Volume, i.e. tractors in play.
 
@@ -107,38 +108,82 @@ table of the best micro-market pockets to work first.
 ## Stage 1 · Define
 *Configure micro-markets & archetypes*
 
-### Map Explorer — `MapExplorer.tsx`
-Micro-markets plotted as points on a district map. Pick state → district → a colouring
-metric (TIV, Sonalika share, or demand potential). Click any point and the right panel
-shows its profile: archetype, HP belt, mean HP, TIV, share, annual demand, rainfall and
-temperature, plus every member village with its own demand and tractor count.
+### Micro-market & district profile — `MapExplorer.tsx`
+One map that zooms: **India → state → district**. The three pilot states are the only ones
+you can click; the rest of the country is drawn as context because the model does not cover
+it. Inside a district the layer toggle switches between the district boundary and the
+**micro-markets inside it**, drawn as bubbles sized by TIV.
 
-This is where you *see* what a micro-market is.
+Clicking anything — a district polygon, a micro-market bubble, or a row in the table below —
+opens the same profile panel:
 
-### District profile — `DistrictProfile.tsx`
-One sortable row per district. Real agro-climate (temperature, rainfall, NARP sub-zone
-with length-of-growing-period, and a stacked crop-mix bar for wheat/rice/cotton/soybean/
-sugarcane) sitting next to the modelled market signals (TIV, Sonalika share, demand).
+| | District | Micro-market |
+|---|---|---|
+| Villages, TIV, mean HP, HP belt, TIV tier | its own | its own |
+| Sonalika share | — | its own |
+| Dealers by line, OEMs present | real, district-geocoded | inherited, plus **distance to the nearest dealer** |
+| Rainfall, temperature, irrigation | real (IMD) | inherited, and the panel says so |
+| Soil type, climate, growing period | real (ICAR AESR) | inherited |
+| Crop mix, most-grown crop | real (DES) | its own most-grown |
+| Fleet by HP band | rolled up | its own |
+| Zone, sub-zone, archetype | | |
 
-A `~` after a temperature means it was filled from the nearest station rather than
-measured in that district.
+This replaces the old two-tab split, where *Map Explorer* was a dot cloud on an empty
+canvas and *District profile* was a table with no map. The district table is still there
+under the map, and it drives the same selection.
+
+Dealer counts are real but geocoded to the district, so a micro-market shows distance
+rather than an invented count — and the implements dealer file has no Punjab rows, so a
+zero there means *no data*, not *no dealers*.
 
 ### Archetypes — `Archetypes.tsx`
-The segmentation itself. KPIs for archetype count, micro-market count, total TIV and
-TIV-weighted average share. Then three tables: the **NARP sub-zones** (the real
-agro-climatic axis), the **HP belts** (the third axis), and the full archetype list
-ranked by demand — each named by dominant crop + TIV, split geographically by sub-zone.
+The segmentation itself: **zone × TIV tier × HP belt**, 46 of them, ranked by fleet.
+Each row carries the zone and its member sub-zones, the HP belt, the TIV tier, the crop
+most grown there, micro-market and village counts, TIV, Sonalika share, and the **top
+branded rival**.
+
+Two notes on what is *not* here:
+
+- **No demand column.** Define describes the market; demand is the number Plan ranks with,
+  and it lives there. (It is load-bearing everywhere else — `sales = share × demand`
+  exactly — so it was removed from these tables only.)
+- **"Top branded rival", not "dominant competitor".** The actual leader is the unbranded
+  *Local* segment in all 46 archetypes, so a leader column would say the same thing 46
+  times. Excluding Local and Sonalika gives four real names — Landforce, KhedutAgro,
+  Mahindra, Fieldking — which is what separates Punjab from MP and Maharashtra.
+
+The archetype is named by its **own most-grown crop**, so the name and the Most-grown
+column are the same fact. Zone is the key rather than sub-zone because the client thinks in
+zones; the sub-zones are still shown, and micro-market clustering still happens within them.
 
 ### Configure — `Configure.tsx`
-Carve out a **new archetype from a rule**. Set thresholds — sub-zone, TIV tier (top/bottom
-third), HP belt, dominant crop, irrigation — name it, and hit *Create & re-cluster*. Every
-matching micro-market is pulled out of its current archetype into the new one and all
-summaries recompute.
+The **taxonomy editor** — the categories every archetype is built from:
 
-Deterministic and transparent, so the client can react to a concrete preview rather than a
-black box. Changes are saved **server-side** and show up on Archetypes, Map Explorer and
-District profile too, until you hit *Reset to base*. If a rule matches nothing, the page
-tells you the rule was too narrow instead of failing silently.
+- **TIV tiers** — create, rename, delete, and move the quantile cuts (the shipped three are
+  Low/Medium/High at even thirds).
+- **HP belts** — same, with HP bounds; the top belt is left open-ended.
+- **Dominant crop** — the vocabulary archetypes are named from. Each category lists the raw
+  crops it *covers*, so putting wheat, rice and maize in one row merges them into a single
+  "Cereals" category, and deleting a row stops that crop naming anything (those archetypes
+  fall through to their next-biggest crop). A crop belongs to at most one category.
+
+**Zones are shown but not editable.** They are the published ICAR agro-climatic scheme, and
+the soil, climate and growing-season figures on the profile panel are measured against
+those boundaries — a redrawn zone would carry data that no longer describes it. The API
+pins them, so a PUT that redraws one is ignored rather than silently accepted.
+
+**Save re-labels** all 23,389 micro-markets against the new definition in about a second,
+and the archetype table on the previous tab follows — as do Review, Plan and Act, which
+re-roll their archetype-grain numbers from micro-market grain using the pipeline's own
+rollup function. What it does *not* do is regroup villages: which villages form a
+micro-market is fixed by the pipeline.
+
+Two things stay keyed to the shipped clustering until the pipeline is re-run: the
+archetype-level **UCM panels** and the **cluster profiles** (the "defining features"
+sentence). An archetype whose id the pipeline has never seen shows those two fields blank
+rather than borrowing another archetype's.
+
+*Reset to shipped* restores `pipeline/config/taxonomy.yaml`.
 
 ---
 
@@ -155,26 +200,66 @@ problem or a product problem?** Four diagnoses are used consistently across all 
 | **Product issue** | Low product fit, can't crack it anywhere | Needs an adapted or new product, *not* more selling |
 | **Monitor** | Too little demand to prioritise | Leave it |
 
-### Micro-market details — `MicromarketDetails.tsx`
-Every operational signal at micro-market level, mapped and colourable by Sonalika sales,
-market share, TIV, demand potential or activities. Click a point for sales, share, TIV,
-demand, conversion rate, product fit, the **activities → enquiries → deliveries funnel**
-as bars, and dealer accessibility.
+### Market explorer — `MarketExplorer.tsx`
+The same India → state → district drill as Define's first tab, asking the next question.
+Click any district or micro-market and the panel gives three buckets:
+
+- **What we sold** — sales, demand, market share, TIV, product fit, unserved demand, and the
+  **activities → enquiries → deliveries** funnel with its two conversion rates. Three bars,
+  not four: `deliveries_yr` and `sonalika_sales_units` are the same column, so drawing both
+  would invent a stage converting at 100%.
+- **Who farms here** — rural population, households, holdings, average holding size,
+  small-and-marginal share, farm income per holding, tractor density, fleet age and loan
+  approval. Badged **allocated**: published state totals (Census 2011 population, the
+  state × tier holding mix) split down to villages by model and summed back up.
+- **What grows here** — rainfall, temperature, irrigation, soil, climate and growing period
+  from ICAR, plus the foodgrain area mix.
+
+**The two crop facts are deliberately kept apart.** The DES source behind the crop table is a
+**foodgrain-only** extract, so cotton, soybean, sugarcane and groundnut are zero on all 114
+districts however much of them is grown. The *most-grown* line underneath comes from the
+modelled village crop mix, which does cover them. Merging the two into one chart would say
+cotton isn't grown in Punjab; showing them separately, each with its own badge, says what
+each source actually knows. Crops the source reports as zero for a district are dropped
+rather than drawn as an empty bar.
+
+Bubble size is any of six metrics; bubble colour is the diagnosis, so a district of amber
+dots is a product problem and a district of blue ones is a selling problem.
 
 ### Archetype details — `ArchetypeDetails.tsx`
-The same signals rolled up to archetype level, with the diagnosis attached and *explained*
-in plain English. Sortable table of every archetype (share, product fit, % of its
-micro-markets cracked, sales); click one to see its full profile and a map of its
-micro-markets coloured by sales.
+The same signals rolled up to archetype level with the diagnosis attached, and the diagnosis
+*explained*: hover any of the three cards for the rule that produced it.
+
+- **Monitor** means the whole archetype earns less demand than its micro-market count would
+  need to clear the bar — the 20th-percentile micro-market's demand times how many it has.
+  Not a product problem and not a selling problem; too small to plan against yet.
+- **There is no Defend card**, and the screen says so: Defend needs a 10% share and the
+  strongest archetype holds 8.9%. Plan's Defend bucket reads strength *relative* to the set,
+  which is why Plan shows one and this table does not.
+
+The map sits directly under the diagnosis cards. Green is a micro-market we have **won** —
+10% share or better, the same bar the **% of MM won** column counts — so the green fraction
+of the map *is* that column.
 
 ### Network coverage — `NetworkCoverage.tsx`
-Sonalika vs rival OEMs across the three states, mapped onto archetypes. Toggle between
-**sales** coverage (real, from the dealer locator) and **service** coverage (dummy — the
-ITL service master is pending).
+Where the dealers are against where the demand is, with a map above the tables: one bubble
+per district, coloured by the toggled coverage index and sized by demand, so a large red
+bubble is the gap worth closing.
 
-The actionable output is the highlighted rows: **sales-issue archetypes with under-50%
-coverage**. Product is proven, the network just isn't there. That's the fastest lever —
-expand coverage, don't change the product.
+**Two kinds of number, and the screen no longer conflates them.** Dealer counts and the OEM
+table are **real**, from the locator. The coverage indices are **modelled** — sales coverage
+is a distance decay off a *simulated* dealer network, and service coverage is that discounted
+and noised until ITL ships its service master. This screen used to badge the whole sales view
+"real · dealer locator", which read as a claim about the coverage bars.
+
+Districts the dealer file does not cover — **every Punjab district, for implements** — are
+drawn grey rather than at 0%. The count is unknown there, not zero, and colouring it as an
+absence would claim a gap we cannot see.
+
+The table adds a **major competitor** column: the strongest *branded* rival, excluding the
+unbranded local-fabricator segment that leads all 46 archetypes. Same source and same
+exclusion as the Define archetype table, so the two screens never name different competitors
+for the same archetype.
 
 ### Competition — `Competition.tsx`
 Sonalika is a challenger in implements (~8% share), so this page deliberately doesn't ask
@@ -371,3 +456,31 @@ restructure into four stages re-homed the views and these got orphaned rather th
 every render of the weight-mix panel and throws the result away.
 
 Say the word and I'll fix 1–4; the first is a ten-line change.
+
+---
+
+## How data flows
+
+```
+sources  ->  pipeline.run (21 stages)  ->  data/marts/*.parquet  ->  FastAPI + DuckDB  ->  React view
+```
+
+Census 2011 geography, IMD weather, DES cropland, tractor registrations, dealer
+locators, state subsidy rates and the SKU catalogue go in. `python -m pipeline.run`
+walks 21 dependency-ordered stages (`geo → ingest → assets → competition → sku →
+features → agroclimate → ucm → cluster → factors → score → export → compete →
+micromarkets → operations → archetype_sales → archetype_ucm → insights → shapes →
+dealers → subsidy`) and writes parquet into `data/marts`. `api/main.py` is a thin
+DuckDB read layer over those files; each view fetches only the endpoints it needs.
+
+Two consequences: every screen is a **read** of a pre-computed mart — the maths is in
+the pipeline, not the browser, so a wrong number is a pipeline question. And any stage
+re-runs alone once its inputs exist (`--stage ucm`, `--from features`), so you don't
+pay the full ~60s rebuild to iterate.
+
+The one exception is **Configure** (Stage 1), which writes an edited taxonomy
+server-side and re-labels every micro-market live, without a pipeline run.
+
+**5. `startup.sh` reload loop — fixed.** `uvicorn --reload` was unscoped, so the watcher
+watched `.venv` and reloaded forever; the API never stayed up long enough to answer.
+Now scoped with `--reload-dir api --reload-dir pipeline`.

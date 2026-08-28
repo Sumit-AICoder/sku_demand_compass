@@ -70,13 +70,34 @@ class Config:
     def weights(cls) -> dict:
         return cls._get("weights.yaml")
 
-    @classmethod
-    def skus(cls) -> list[dict]:
-        return cls._get("sku_catalog.yaml")["skus"]
+    # The two product lines live in two catalogues with the same shape. Merging them here
+    # rather than at ten call sites means every `for sku in Config.skus()` in the pipeline
+    # covers both lines automatically -- each SKU carries the line it came from, and only
+    # the addressability step has to care which.
+    CATALOGUES = {"implements": "sku_catalog.yaml", "tractors": "tractor_catalog.yaml"}
 
     @classmethod
-    def sku_categories(cls) -> dict:
-        return cls._get("sku_catalog.yaml")["categories"]
+    def skus(cls, line: str | None = None) -> list[dict]:
+        """Every SKU, or one product line's. Each carries `product_line`."""
+        out = []
+        for name, path in cls.CATALOGUES.items():
+            if line and name != line:
+                continue
+            if not (CONFIG / path).exists():
+                continue
+            for s in cls._get(path)["skus"]:
+                out.append({**s, "product_line": name})
+        return out
+
+    @classmethod
+    def sku_categories(cls, line: str | None = None) -> dict:
+        out = {}
+        for name, path in cls.CATALOGUES.items():
+            if line and name != line:
+                continue
+            if (CONFIG / path).exists():
+                out.update(cls._get(path)["categories"])
+        return out
 
     @classmethod
     def sku(cls, sku_id: str) -> dict:

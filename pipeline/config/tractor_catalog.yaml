@@ -1,0 +1,97 @@
+# Sonalika TRACTOR catalogue -- the second product line.
+#
+# Structured to mirror sku_catalog.yaml so one loader (Config.skus) serves both, but the
+# demand equation behind it is different in one important way: an implement attaches to a
+# tractor that already exists, and a tractor does not attach to anything. See
+# pipeline/simulate/sku_history.py::_tractor_addressable.
+#
+# ONE SKU PER HP BAND, and the bands PARTITION the fleet (20-35, 35-45, 45-60, 60+) rather
+# than overlapping. That is deliberate: `owned` for a tractor SKU is the village's actual
+# fleet in that band, so two SKUs covering the same band would count the same tractors twice.
+# Each row therefore represents the MARKET for tractors in its band, named after Sonalika's
+# representative models there; brand is applied afterwards by sonalika_share, exactly as it
+# is for implements.
+#
+# PRICES are indicative market ranges for value-weighting demand, not Sonalika list prices --
+# the same caveat sku_catalog.yaml carries. Nothing here is ITL-supplied.
+
+meta:
+  product_line: tractors
+  source: >
+    HP bands from the village fleet split in village_assets.parquet. Model names are
+    Sonalika's public range; prices, life and seasonality are indicative and modelled.
+  notes: >
+    Sonalika's own tractor SHARE cannot be derived from the dealer file -- data/raw/dealers/
+    tractors.csv is a competitor-only scrape with zero Sonalika rows. It is assumed from a
+    national prior and badged separately wherever it drives a number.
+
+categories:
+  tractor_compact:  {label: "Compact tractors (under 35 HP)", order: 1}
+  tractor_utility:  {label: "Utility tractors (35-45 HP)", order: 2}
+  tractor_standard: {label: "Standard tractors (45-60 HP)", order: 3}
+  tractor_heavy:    {label: "Heavy tractors (60 HP+)", order: 4}
+
+skus:
+  - id: TRACTOR_20_35
+    name: "Sonalika DI 30 / Baagban (20-35 HP)"
+    category: tractor_compact
+    hp_min: 20
+    hp_max: 35
+    # Which holding sizes can justify a tractor of this size at all. A compact tractor is the
+    # first tractor a small holding buys; a large holding would not choose one.
+    farm_size_fit: {marginal: 0.55, small: 1.0, semi_medium: 0.7, medium: 0.3, large: 0.1}
+    crop_fit: {wheat: 0.7, rice: 0.7, cotton: 0.7, soybean: 0.7, maize: 0.8, sugarcane: 0.5, pulses: 0.8, oilseeds: 0.8, horticulture: 1.0}
+    season: [3, 4, 9, 10, 11]        # post-harvest cash, and pre-kharif
+    maturity: growth
+    price_inr: 480000
+    life_years: 12
+    rental_substitutable: 0.30       # CHC hiring displaces a first tractor most of all
+    compete_intensity: 0.80
+    # How much further this band can mechanise, as a fraction of the fleet already in it.
+    # Sub-35 HP is flat-to-declining as power shifts upward.
+    growth_ceiling: 0.15
+
+  - id: TRACTOR_35_45
+    name: "Sonalika DI 35 / DI 42 Sikander (35-45 HP)"
+    category: tractor_utility
+    hp_min: 35
+    hp_max: 45
+    farm_size_fit: {marginal: 0.15, small: 0.7, semi_medium: 1.0, medium: 0.9, large: 0.5}
+    crop_fit: {wheat: 1.0, rice: 1.0, cotton: 0.9, soybean: 0.9, maize: 0.9, sugarcane: 0.8, pulses: 0.9, oilseeds: 0.9, horticulture: 0.7}
+    season: [3, 4, 9, 10, 11]
+    maturity: mature
+    price_inr: 620000
+    life_years: 12
+    rental_substitutable: 0.22
+    compete_intensity: 0.92          # the volume band -- every OEM fights here
+    growth_ceiling: 0.35          # the volume band: steady replacement-led growth
+
+  - id: TRACTOR_45_60
+    name: "Sonalika DI 47 / DI 50 RX (45-60 HP)"
+    category: tractor_standard
+    hp_min: 45
+    hp_max: 60
+    farm_size_fit: {marginal: 0.02, small: 0.25, semi_medium: 0.7, medium: 1.0, large: 1.0}
+    crop_fit: {wheat: 1.0, rice: 0.9, cotton: 1.0, soybean: 1.0, maize: 0.9, sugarcane: 1.0, pulses: 0.8, oilseeds: 0.8, horticulture: 0.6}
+    season: [3, 4, 9, 10, 11]
+    maturity: mature
+    price_inr: 780000
+    life_years: 13
+    rental_substitutable: 0.15
+    compete_intensity: 0.88
+    growth_ceiling: 0.55          # power is shifting into this band
+
+  - id: TRACTOR_60_PLUS
+    name: "Sonalika Tiger DI 65 / DI 75 (60 HP+)"
+    category: tractor_heavy
+    hp_min: 60
+    hp_max: 90
+    farm_size_fit: {marginal: 0.0, small: 0.05, semi_medium: 0.3, medium: 0.8, large: 1.0}
+    crop_fit: {wheat: 0.9, rice: 0.8, cotton: 0.9, soybean: 1.0, maize: 0.8, sugarcane: 1.0, pulses: 0.6, oilseeds: 0.7, horticulture: 0.5}
+    season: [3, 4, 9, 10, 11]
+    maturity: growth
+    price_inr: 1050000
+    life_years: 14
+    rental_substitutable: 0.10       # too specialised to hire casually
+    compete_intensity: 0.75
+    growth_ceiling: 0.70          # fastest growth, from the smallest base

@@ -18,9 +18,11 @@ const ACTION_COLOR: Record<string, string> = {
  * Answers, in order: how big is this, how much is unclaimed, and what do we do Monday.
  */
 export default function Executive() {
-  const { setView } = useStore()
-  const k = useAsync<any>(() => fetch('/api/kpis').then(r => r.json()), [])
-  const sum = useAsync<any>(() => fetch('/api/villages/summary').then(r => r.json()), [])
+  const { productLine } = useStore()
+  const p = `?product=${productLine}`
+  const k = useAsync<any>(() => fetch(`/api/kpis${p}`).then(r => r.json()), [productLine])
+  const sum = useAsync<any>(() => fetch(`/api/villages/summary${p}`).then(r => r.json()), [productLine])
+  const unit = productLine === 'tractors' ? 'tractors' : 'implements'
 
   return (
     <div className="grid" style={{ gap: 16 }}>
@@ -31,12 +33,13 @@ export default function Executive() {
           <section>
             <h2 className="sec">The size of the prize</h2>
             <div className="kpis">
-              <Big k="Annual demand" v={fmt.units(d.demand.units_per_year)} u="implements a year"
+              <Big k="Annual demand" v={fmt.units(d.demand.units_per_year)} u={`${unit} a year`}
                    s={`across ${d.coverage.villages.toLocaleString('en-IN')} villages`} />
               <Big k="Market value" v={`₹${d.demand.value_crore.toLocaleString('en-IN')}`} u="crore a year"
                    s="at indicative product prices" />
               <Big k="Tractors in play" v={fmt.units(d.coverage.tractors)} u="tractors"
-                   s="the fleet an implement can attach to" />
+                   s={productLine === 'tractors' ? 'the installed base being replaced'
+                                              : 'the fleet an implement can attach to'} />
             </div>
           </section>
 
@@ -63,9 +66,10 @@ export default function Executive() {
             <div className="action-grid">
               {(d.actions ?? []).slice().sort((a: any, b: any) => b.units - a.units)
                 .map((a: any) => (
-                <button key={a.action_segment} className="action-card"
-                        style={{ borderTopColor: ACTION_COLOR[a.action_segment] }}
-                        onClick={() => setView('villages')}>
+                // Not a button: the destination it used to open ('villages') has no route,
+                // so clicking blanked the page. It reads as a stat card, so it is one.
+                <div key={a.action_segment} className="action-card"
+                     style={{ borderTopColor: ACTION_COLOR[a.action_segment] }}>
                   <div className="action-name" style={{ color: ACTION_COLOR[a.action_segment] }}>
                     {a.action_segment}
                   </div>
@@ -75,7 +79,7 @@ export default function Executive() {
                     {fmt.units(a.units)} units a year<br />
                     {fmt.units(a.headroom)} unserved
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           </section>
@@ -119,7 +123,7 @@ export default function Executive() {
                   </tr></thead>
                   <tbody>
                     {(s.micro ?? []).slice(0, 8).map((r: any) => (
-                      <tr key={r.micro_id} className="clickable" onClick={() => setView('villages')}>
+                      <tr key={r.micro_id}>
                         <td><strong>{r.micro_id}</strong></td>
                         <td className="n">{r.villages.toLocaleString('en-IN')}</td>
                         <td className="n">{fmt.units(r.units)}</td>

@@ -1,0 +1,66 @@
+# The segmentation taxonomy -- the categories an archetype is built from.
+#
+# This is the shipped default. The Configure screen edits a copy of it
+# (data/marts/taxonomy.json) and the API re-labels micro-markets against that copy without
+# a pipeline run, so the screen and the mart always agree on what a category means.
+#
+# An archetype is: ZONE x TIV TIER x HP BELT. Dominant crop rides along as a label and a
+# column, not as a key axis -- putting it in the key gives 144 archetypes, most of them thin.
+version: 1
+
+# TIV tiers are quantile cuts on the micro-market's tractor fleet, in ascending order.
+# `upto` is the upper quantile bound; the last tier takes the remainder.
+tiv_tiers:
+  - {name: Low,    code: L, upto: 0.3333}
+  - {name: Medium, code: M, upto: 0.6667}
+  - {name: High,   code: H, upto: 1.0}
+
+# HP belts are bands on the micro-market's TIV-weighted mean tractor HP. `upto` is the
+# inclusive upper bound in HP; the last belt takes the remainder.
+hp_belts:
+  - {name: "<30 HP",   code: "30",   upto: 30}
+  - {name: "31-40 HP", code: "3140", upto: 40}
+  - {name: "41-50 HP", code: "4150", upto: 50}
+  - {name: ">50 HP",   code: "50",   upto: null}
+
+# Crops that can name an archetype. The label is the crop (or crop pair) that stands out
+# against the other zones, so "Wheat" means wheat-heavy FOR THIS GEOGRAPHY, not wheat-only.
+# The crop vocabulary archetypes are named from. `values` are the raw dominant_crop
+# labels in the mart that this category covers -- list several to merge them into one
+# category (Cereals: wheat, rice, maize), and drop a category entirely to stop naming
+# archetypes by it. `share_column` drives the crop-mix bars and is optional.
+crops:
+  - {name: Wheat,        share_column: crop_wheat_share,     values: [wheat]}
+  - {name: Rice,         share_column: crop_rice_share,      values: [rice]}
+  - {name: Cotton,       share_column: crop_cotton_share,    values: [cotton]}
+  - {name: Soybean,      share_column: crop_soybean_share,   values: [soybean]}
+  - {name: Sugarcane,    share_column: crop_sugarcane_share, values: [sugarcane]}
+  - {name: Horticulture, values: [horticulture]}
+  - {name: Maize,        values: [maize]}
+  - {name: Pulses,       values: [pulses]}
+  - {name: Oilseeds,     values: [oilseeds]}
+# Agro-climatic zones. Each is one or more NARP/AESR sub-zones, and the id is what the
+# archetype keys on -- so combining two zones here merges their archetypes, and splitting
+# one apart divides them. Names are canonical: one name per zone id, always.
+zones:
+  - id: "2"
+    name: Western Plain (hot arid)
+    subzones: ["2.3"]
+  - id: "4"
+    name: Northern Plain (hot semi-arid)
+    subzones: ["4.1", "4.2"]
+  - id: "4H"
+    name: Central Highlands (hot semi-arid)
+    subzones: ["4.3"]          # NARP files 4.3 under zone 4, but it is Malwa, not the plain
+  - id: "5"
+    name: Central Highlands (semi-arid)
+    subzones: ["5.2", "5.3"]
+  - id: "6"
+    name: Deccan Plateau (hot semi-arid)
+    subzones: ["6.1", "6.2", "6.3", "6.4"]
+  - id: "10"
+    name: Central Highlands (hot subhumid)
+    subzones: ["10.2", "10.3", "10.4"]
+  - id: "19"
+    name: Western Ghats & Coastal
+    subzones: ["19.1", "19.2"]  # humid and perhumid, one zone
