@@ -12,6 +12,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.8
 openpyxl>=3.1
+pypdf>=4.0          # pipeline/ingest/agroclimate.py reads the IMD rainfall PDF
 tqdm>=4.66
 anthropic>=1.0
 openai>=1.40
