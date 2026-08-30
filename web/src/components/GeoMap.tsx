@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react'
+import React, { useMemo, useRef, useState, useEffect, useId } from 'react'
 import { useAsync } from './common'
 
 /**
@@ -103,6 +103,11 @@ export function GeoMap({ points, selected, onSelect, height = 420, legend,
     } : undefined,
   }
 
+  // National outline, drawn without any extra geometry: dilate the alpha of every state
+  // shape together (so low-opacity fills still count as "solid" first) and flood the
+  // result with the boundary colour. Adjacent states dissolve into one silhouette and
+  // only the true outer edge of the country gets painted -- no polygon union needed.
+  const borderId = 'border-' + useId().replace(/:/g, '')
   const [box, W] = useWidth<HTMLDivElement>()
   const H = height
   const proj = useMemo(() => {
@@ -154,9 +159,28 @@ export function GeoMap({ points, selected, onSelect, height = 420, legend,
       {!ready && <div className="loading" style={{ height }}>loading map…</div>}
       {ready && <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height, display: 'block' }}
            role="img" aria-label="Map of the pilot states">
+        {level === 'india' && (
+          <defs>
+            <filter id={borderId} filterUnits="userSpaceOnUse"
+                    x={-20} y={-20} width={W + 40} height={H + 40}>
+              <feColorMatrix in="SourceAlpha" type="matrix"
+                values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 40 0" result="solid" />
+              <feMorphology in="solid" operator="dilate" radius="1.6" result="dilated" />
+              <feFlood result="edgeColor" style={{ floodColor: 'var(--map-edge)' }} />
+              <feComposite in="edgeColor" in2="dilated" operator="in" result="edge" />
+              <feMerge>
+                <feMergeNode in="edge" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+        )}
         {/* Two passes: the out-of-scope states are backdrop and must never sit on top of a
             shape you can click, and at India level a state's rings are its districts, so
-            drawing fills and outlines together leaves a scribble inside every state. */}
+            drawing fills and outlines together leaves a scribble inside every state. Both
+            passes sit in one group so the border filter dilates their union, not each
+            shape alone. */}
+        <g filter={level === 'india' ? `url(#${borderId})` : undefined}>
         {shapePaths.filter(f => !f.pilot).map(f => (
           <path key={f.id} d={f.d} fill="var(--panel)" stroke="var(--border)"
                 strokeWidth={0.5} opacity={0.35} />
@@ -180,6 +204,7 @@ export function GeoMap({ points, selected, onSelect, height = 420, legend,
             </path>
           )
         })}
+        </g>
         {points.map(p => (
           <circle key={p.id} cx={proj.x(p.lon)} cy={proj.y(p.lat)} r={r(p.value)}
                   fill={p.color} fillOpacity={selected && selected !== p.id ? 0.28 : 0.78}

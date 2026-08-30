@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react'
 import { api, fmt } from '../lib/api'
 import { Card, Async, useAsync, Kpi, Info } from './common'
 import { GeoMap, MapPoint } from './GeoMap'
+import ArchetypeSkus from './ArchetypeSkus'
 
 /**
  * REVIEW · Archetype details — the micro-market signals rolled up to archetype level, with
@@ -139,6 +140,8 @@ export default function ArchetypeDetails() {
               </div>}
             </Card>
           </div>
+
+          <ArchetypeSkus archetypeId={sel} />
         </>
       )}</Async>
     </div>

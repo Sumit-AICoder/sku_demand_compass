@@ -489,6 +489,88 @@ def cluster_skus(cluster_id: int, limit: int = 12):
         ORDER BY index_vs_national DESC LIMIT ?""", [cluster_id, limit])
 
 
+def _weighted_sku_basket(w: pd.DataFrame) -> pd.DataFrame:
+    """Every SKU's weighted units/value under a set of district weights, plus its index
+    vs the national mix. The shared core behind a single archetype's basket and a whole
+    bucket's basket -- only the weight source (see _scope_weights / _bucket_weights)
+    differs. Implements-grain only (bare `district_sku`, not the product-line-split
+    `district_sku_pl`) -- the same scope /api/scores and /api/clusters/{id}/skus already
+    settle for; tractors only has 4 HP-band SKUs, one per archetype HP belt, so this
+    basket view adds little there anyway.
+    """
+    if w.empty:
+        return pd.DataFrame()
+    cols = ["units", "value", "new_units", "replacement_units", "headroom", "addressable"]
+    d = con().execute("""
+        SELECT district_id, sku_id, potential_units_yr AS units, potential_value_inr AS value,
+               new_units_yr AS new_units, replacement_units_yr AS replacement_units,
+               headroom, addressable
+        FROM district_sku""").fetchdf().merge(w, on="district_id")
+    for c in cols:
+        d[c] = d[c] * d["w"]
+    basket = d.groupby("sku_id")[cols].sum()
+    if basket.empty or basket["units"].sum() == 0:
+        return pd.DataFrame()
+    nat = con().execute(
+        "SELECT sku_id, sum(potential_units_yr) AS units FROM district_sku GROUP BY 1"
+    ).fetchdf().set_index("sku_id")["units"]
+    arch_share = basket["units"] / basket["units"].sum()
+    nat_share = (nat / nat.sum()).reindex(basket.index)
+    basket["index_vs_national"] = (arch_share / nat_share.replace(0, np.nan)).round(2)
+    return basket
+
+
+def _archetype_sku_basket(archetype_id: str, limit: int | None = None) -> list[dict]:
+    """Full per-SKU basket for one archetype: demand, value, index vs national, the
+    archetype's own TIV-weighted subsidy rate per SKU, and the national cannibalisation
+    rate. Shared by the /archetypes/{id}/skus route and act_playbook's SKU-level
+    recommendations, so both read the same numbers.
+    """
+    basket = _weighted_sku_basket(_scope_weights(None, archetype_id))
+    if basket.empty:
+        return []
+
+    # Subsidy: TIV-weighted across the archetype's own states, per SKU -- the same state
+    # weights the subsidy play used to average away before joining; kept per-SKU here so
+    # each row gets its own rate instead of one number for the whole archetype.
+    st = con().execute("""SELECT state, sum(tiv) AS w FROM micromarket_ops
+                          WHERE archetype_id = ? GROUP BY 1""", [archetype_id]).fetchdf()
+    sub_pct, sub_prov = pd.Series(dtype=float), pd.Series(dtype=object)
+    if len(st):
+        sub = con().execute("SELECT state, sku_id, subsidy_pct, provenance FROM subsidy") \
+            .fetchdf().merge(st, on="state")
+        if len(sub):
+            sub["wp"] = sub["subsidy_pct"] * sub["w"]
+            g = sub.groupby("sku_id")
+            sub_pct = (g["wp"].sum() / g["w"].sum()).round(1)
+            sub_prov = g["provenance"].agg(lambda s: "real" if (s == "real").any() else "allocated")
+
+    cannibal = con().execute(
+        "SELECT sku_id, displaced_pct FROM cannibal_int_sku").fetchdf() \
+        .set_index("sku_id")["displaced_pct"]
+    ref = con().execute(
+        "SELECT sku_id, name, category, category_label, hp_min, hp_max, maturity FROM sku_ref"
+    ).fetchdf().set_index("sku_id")
+
+    out = basket.join(ref, how="inner")
+    out["subsidy_pct"] = out.index.map(sub_pct)
+    out["subsidy_provenance"] = out.index.map(sub_prov)
+    out["cannibal_pct"] = out.index.map(cannibal).round(1)
+    out = out.sort_values("units", ascending=False)
+    if limit:
+        out = out.head(limit)
+    return clean(out.reset_index().to_dict("records"))
+
+
+@app.get("/api/archetypes/{archetype_id}/skus")
+def archetype_skus(archetype_id: str, limit: int = 12):
+    """Top SKUs for one archetype, versus the national mix -- same over-index idea as
+    cluster_skus above, but weighted by the archetype's own fractional share of each
+    district's TIV (see _scope_weights) instead of a hard village-level cluster filter,
+    since an archetype spans only part of most of its districts."""
+    return _archetype_sku_basket(archetype_id, limit)
+
+
 @app.get("/api/whitespace")
 def whitespace(cluster_id: int | None = None, state: str | None = None, limit: int = 100):
     """Villages under-penetrated relative to their own archetype -- targeting priorities."""
@@ -1364,6 +1446,22 @@ def plan_bucket_micromarkets(archetype_id: str, limit: int = 400):
     return {"archetype_id": archetype_id, "provenance": "modelled", "micromarkets": rows}
 
 
+@app.get("/api/plan/buckets/{bucket}/skus")
+def bucket_skus(bucket: str, limit: int = 12, fit_min: float = 0.55,
+                mode: str = "stronghold", defend_pct: float = 0.75, product: str = "implements"):
+    """Top SKUs across every archetype in one Defend/Grow/No product fit bucket -- which
+    products carry the Grow list vs. what's already Defended vs. what doesn't fit at all."""
+    w = _bucket_weights(_line(product), bucket, fit_min, mode, defend_pct)
+    basket = _weighted_sku_basket(w)
+    if basket.empty:
+        return []
+    ref = con().execute(
+        "SELECT sku_id, name, category, category_label, hp_min, hp_max, maturity FROM sku_ref"
+    ).fetchdf().set_index("sku_id")
+    out = basket.join(ref, how="inner").sort_values("units", ascending=False).head(limit)
+    return clean(out.reset_index().to_dict("records"))
+
+
 # ---------------------------------------------------------------- plan: forecast
 
 class PlanForecast(BaseModel):
@@ -1371,6 +1469,9 @@ class PlanForecast(BaseModel):
     weights: dict[str, float] = Field(default_factory=dict)
     state: str | None = None
     archetype_id: str | None = None
+    bucket: str | None = None                    # Defend | Grow | No product fit
+    sku_id: str | None = None                    # allocate the scope's forecast to one SKU
+    product: str = "implements"                  # which bucket definition applies
     metric: str = "demand"                       # demand | registrations
     history_months: int = 12
 
@@ -1398,6 +1499,25 @@ def _scope_weights(state: str | None, archetype_id: str | None) -> pd.DataFrame:
     return w.dropna()
 
 
+def _bucket_weights(line: str, bucket: str, fit_min: float = 0.55,
+                    mode: str = "stronghold", defend_pct: float = 0.75) -> pd.DataFrame:
+    """District weights for every archetype in one Defend/Grow/No product fit bucket --
+    same idea as _scope_weights, just summed over a bucket's whole archetype set (from
+    _plan_buckets) instead of a single archetype_id."""
+    a = _plan_buckets(line, fit_min, mode, defend_pct)
+    ids = a.loc[a["bucket"] == bucket, "archetype_id"].tolist()
+    if not ids:
+        return pd.DataFrame(columns=["district_id", "w"])
+    ph = ",".join("?" * len(ids))
+    w = con().execute(f"""
+        WITH a AS (SELECT district_id, sum(tiv) AS own FROM micromarket_ops
+                   WHERE archetype_id IN ({ph}) GROUP BY 1),
+             d AS (SELECT district_id, sum(tiv) AS tot FROM micromarket_ops GROUP BY 1)
+        SELECT a.district_id, a.own / nullif(d.tot, 0) AS w
+        FROM a JOIN d USING (district_id)""", ids).fetchdf()
+    return w.dropna()
+
+
 @app.post("/api/plan/forecast")
 def plan_forecast(s: PlanForecast):
     """Six months forward, and what the scenario sliders do to it.
@@ -1408,10 +1528,22 @@ def plan_forecast(s: PlanForecast):
     uses, applied month by month instead of to one annual scalar. Factor-weight overrides
     re-score demand, so they come from the scenario re-scorer and land as a level shift.
     """
-    w = _scope_weights(s.state, s.archetype_id)
+    w = _bucket_weights(_line(s.product), s.bucket) if s.bucket else _scope_weights(s.state, s.archetype_id)
     if w.empty:
         raise HTTPException(404, "no districts in that scope")
     wt = w.set_index("district_id")["w"]
+
+    # Allocate the scope's forecast to one SKU: a static demand-share multiplier, applied
+    # at the end to the already-computed scope-level numbers -- the UCM has no SKU
+    # dimension of its own, so the SKU gets the scope's shape and shock-sensitivity,
+    # scaled to its own volume, not a fitted seasonality/elasticity of its own.
+    sku_share, sku_name = 1.0, None
+    if s.sku_id:
+        basket = _weighted_sku_basket(w)
+        tot = float(basket["units"].sum()) if not basket.empty else 0.0
+        sku_share = float(basket.loc[s.sku_id, "units"]) / tot if s.sku_id in basket.index and tot else 0.0
+        ref = q("SELECT name FROM sku_ref WHERE sku_id = ?", [s.sku_id])
+        sku_name = ref[0]["name"] if ref else s.sku_id
 
     hist = con().execute("SELECT district_id, month, observed FROM ucm_decomposition").fetchdf()
     fcst = con().execute("SELECT district_id, month, forecast, lo, hi FROM ucm_forecast").fetchdf()
@@ -1488,19 +1620,59 @@ def plan_forecast(s: PlanForecast):
         unit = "implement demand, units / month"
 
     tail = int(max(s.history_months, 1))
-    history = [{"month": r["month"], "actual": round(float(r["observed"]), 1)}
+    history = [{"month": r["month"], "actual": round(float(r["observed"]) * sku_share, 1)}
                for _, r in h.tail(tail).iterrows() if np.isfinite(r["observed"])]
     forecast = [{"month": r["month"],
-                 "baseline": round(float(r["forecast"]), 1),
-                 "scenario": round(float(r["scenario"]), 1),
-                 "lo": round(float(r["lo"]) * np.exp(-band), 1),
-                 "hi": round(float(r["hi"]) * np.exp(band), 1)}
+                 "baseline": round(float(r["forecast"]) * sku_share, 1),
+                 "scenario": round(float(r["scenario"]) * sku_share, 1),
+                 "lo": round(float(r["lo"]) * np.exp(-band) * sku_share, 1),
+                 "hi": round(float(r["hi"]) * np.exp(band) * sku_share, 1)}
                 for _, r in f.iterrows()]
 
-    base_sum = float(f["forecast"].sum()) or 1.0
-    scen_sum = float(f["scenario"].sum())
+    base_sum = float(f["forecast"].sum()) * sku_share or 1.0
+    scen_sum = float(f["scenario"].sum()) * sku_share
+
+    # ---- category split: an "allocated" cut, not a second model -------------------
+    # The UCM fits one aggregate series per district -- no product dimension anywhere in
+    # it. What's real here is arithmetic on marts that already exist: each category's
+    # static share of this scope's demand (district_sku, weighted the same as everything
+    # above), shaped across the year by that category's own SKUs' seasonal index. Category
+    # rather than full SKU because a coarser cut is less noisy to allocate over six months,
+    # and it's rescaled to sum exactly back to `base_sum` -- children of a real total, not
+    # a second forecast.
+    by_category = []
+    if s.metric != "registrations" and not s.sku_id:
+        dsku = con().execute("""
+            SELECT district_id, sku_id, category, potential_units_yr AS units
+            FROM district_sku""").fetchdf()
+        dsku = dsku[dsku["district_id"].isin(wt.index)].copy()
+        if len(dsku):
+            dsku["units"] = dsku["units"] * dsku["district_id"].map(wt)
+            cat_tot = dsku.groupby("category")["units"].sum()
+            if cat_tot.sum() > 0:
+                cat_share = cat_tot / cat_tot.sum()
+                sku_in_cat = dsku.groupby(["category", "sku_id"])["units"].sum()
+                sku_w = sku_in_cat / sku_in_cat.groupby(level="category").transform("sum")
+                season = con().execute(
+                    "SELECT sku_id, month_of_year, season_index FROM seasonality").fetchdf()
+                sw = sku_w.reset_index().merge(season, on="sku_id")
+                sw["wi"] = sw["season_index"] * sw["units"]
+                cat_month = sw.groupby(["category", "month_of_year"])["wi"].sum()
+                peak = cat_month.groupby(level="category").idxmax().map(lambda t: t[1])
+                labels = con().execute(
+                    "SELECT DISTINCT category, category_label FROM sku_ref"
+                ).fetchdf().set_index("category")["category_label"]
+                MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                by_category = [{
+                    "category": c, "category_label": labels.get(c, c),
+                    "units_6mo": round(float(cat_share[c] * base_sum), 1),
+                    "share_pct": round(float(cat_share[c] * 100), 1),
+                    "peak_month": MON[int(peak[c]) - 1] if c in peak.index else None,
+                } for c in cat_tot.sort_values(ascending=False).index]
+
     by_state = []
-    if s.shocks and not s.state and not s.archetype_id:
+    if s.shocks and not s.state and not s.archetype_id and not s.bucket:
         st = con().execute("SELECT district_id, state FROM district_totals").fetchdf()
         d_f["state"] = d_f["district_id"].map(st.set_index("district_id")["state"])
         gb = d_f.groupby("state").apply(
@@ -1514,8 +1686,11 @@ def plan_forecast(s: PlanForecast):
 
     return clean({
         "metric": s.metric, "unit": unit, "provenance": "allocated",
-        "scope": {"state": s.state, "archetype_id": s.archetype_id,
+        "scope": {"state": s.state, "archetype_id": s.archetype_id, "bucket": s.bucket,
+                  "sku_id": s.sku_id, "sku_name": sku_name,
+                  "sku_share_pct": round(sku_share * 100, 1) if s.sku_id else None,
                   "districts": int(len(wt))},
+        "by_category": by_category,
         "history": history, "forecast": forecast,
         "history_ends": history[-1]["month"] if history else None,
         "total": {"baseline": round(base_sum, 1), "scenario": round(scen_sum, 1),
@@ -1678,6 +1853,44 @@ def _archetype_rivals(archetype_id: str, limit: int = 6) -> list[dict]:
         con().unregister("mm_sel")
 
 
+def _archetype_rivals_by_sku(archetype_id: str, limit: int = 20) -> list[dict]:
+    """Same source as _archetype_rivals, not collapsed across our own SKUs -- "our SKU X:
+    N units winnable from rival Y, M at risk to them". The rival side is always a brand
+    (no rival product catalogue exists anywhere in this data); our own sku_id survives
+    cannibal_ext's village x SKU grain, it's just thrown away by _archetype_rivals'
+    GROUP BY closest_rival alone."""
+    g = _current_grain()
+    mm = g.loc[g["archetype_id"] == archetype_id, ["micro_market_id", "district_id"]]
+    con().register("mm_sel", mm)
+    try:
+        return clean(con().execute("""
+            WITH vv AS (SELECT v.village_id FROM village_micromarket v
+                        JOIN mm_sel USING (micro_market_id))
+            SELECT c.sku_id, r.name, c.closest_rival AS rival,
+                   sum(c.winnable_units) AS winnable, sum(c.at_risk_units) AS at_risk
+            FROM cannibal_ext c JOIN vv USING (village_id) JOIN sku_ref r USING (sku_id)
+            WHERE c.district_id IN (SELECT DISTINCT district_id FROM mm_sel)
+            GROUP BY 1, 2, 3 HAVING sum(c.winnable_units) > 0 OR sum(c.at_risk_units) > 0
+            ORDER BY winnable + at_risk DESC LIMIT ?
+        """, [limit]).fetchdf().to_dict("records"))
+    finally:
+        con().unregister("mm_sel")
+
+
+@app.get("/api/archetypes/{archetype_id}/rivals-by-sku")
+def archetype_rivals_by_sku(archetype_id: str, limit: int = 500):
+    """Standalone route over _archetype_rivals_by_sku, so any archetype-scoped screen can
+    pull it independently of act_summary/act_playbook's own responses.
+
+    Default limit is well above the largest archetype's real row count (359, checked
+    against every archetype) rather than a small round number -- a per-archetype-total
+    cap here silently drops a SKU's smaller rival contests before the frontend ever gets
+    to filter down to the handful of SKUs it actually displays, so a row that looks
+    complete for one SKU can quietly be missing a real rival for another.
+    """
+    return _archetype_rivals_by_sku(archetype_id, limit)
+
+
 def _archetype_row(archetype_id: str, line: str = "implements") -> pd.Series:
     a = _plan_buckets(line)
     row = a[a["archetype_id"] == archetype_id]
@@ -1818,6 +2031,7 @@ def act_playbook(b: PlaybookReq, product: str = "implements"):
     # Default to a modest, stated improvement so the play is priced on first load; the panel
     # shows both today's rate and the assumed one, so nothing is hidden.
     approval_new = float(a.approval_rate) if a.approval_rate else min(approval_now + 0.05, 0.95)
+    basket = _archetype_sku_basket(b.archetype_id)
 
     plays: list[dict] = []
 
@@ -1911,23 +2125,36 @@ def act_playbook(b: PlaybookReq, product: str = "implements"):
             "mode": "grow",
         })
 
-    # ---- 6. subsidy, where the state rate is real and high ----------------------------
-    sub = q("""
-        WITH st AS (SELECT state, sum(tiv) AS w FROM micromarket_ops
-                    WHERE archetype_id = ? GROUP BY 1)
-        SELECT s.state, avg(s.subsidy_pct) AS rate, max(s.provenance) AS provenance, max(st.w) AS w
-        FROM subsidy s JOIN st USING (state) GROUP BY 1 ORDER BY w DESC""", [b.archetype_id])
-    if sub and (sub[0]["rate"] or 0) >= 35:
-        prov = sub[0]["provenance"]
-        plays.append({
-            "play": f"Push the {sub[0]['rate']:.0f}% subsidy in {sub[0]['state']}",
-            "owns": "policy",
-            "detail": f"state equipment subsidy on this archetype's SKUs "
-                      f"({'real rate' if prov == 'real' else 'national SMAM proxy'}); "
-                      f"scheme-linked demand runs about 8% above baseline",
-            "units": round(deliveries * 0.08), "tiv_reached": None, "mode": "grow",
-            "confidence": "arithmetic" if prov == "real" else "proxy",
-        })
+    # ---- 6. subsidy, weighted by this archetype's own SKU basket ----------------------
+    # The basket already carries each SKU's own TIV-weighted subsidy rate (see
+    # _archetype_sku_basket); demand-weight those into one archetype-wide rate instead of
+    # averaging across states first and then ignoring the number, which is what this used
+    # to do -- the units figure below actually moves with how generous the rate really is.
+    sub_rows = [x for x in basket if x.get("subsidy_pct") is not None]
+    sub_units = sum(x["units"] for x in sub_rows)
+    avg_subsidy = (sum(x["units"] * x["subsidy_pct"] for x in sub_rows) / sub_units) if sub_units else 0.0
+    if avg_subsidy >= 35:
+        prov = "real" if any(x["subsidy_provenance"] == "real" for x in sub_rows) else "allocated"
+        top_state = q("""SELECT state, sum(tiv) AS w FROM micromarket_ops
+                         WHERE archetype_id = ? GROUP BY 1 ORDER BY w DESC LIMIT 1""",
+                      [b.archetype_id])
+        state_name = top_state[0]["state"] if top_state else "its states"
+        # Calibrated so the reference point this heuristic always used -- roughly the 40%
+        # MP SMAM proxy rate -- still lands at the original 8% uplift; a genuinely richer
+        # or thinner scheme now scales proportionally instead of every archetype getting
+        # the same flat bump regardless of its real subsidy generosity.
+        units = round(deliveries * 0.08 * (avg_subsidy / 40.0))
+        if units > 0:
+            plays.append({
+                "play": f"Push the ~{avg_subsidy:.0f}% subsidy across this archetype's SKUs",
+                "owns": "policy",
+                "detail": f"demand-weighted subsidy rate across the archetype's own basket, "
+                          f"strongest in {state_name} "
+                          f"({'real rates' if prov == 'real' else 'national SMAM proxy'}); "
+                          f"scheme-linked demand scales with how generous the rate actually is",
+                "units": units, "tiv_reached": None, "mode": "grow",
+                "confidence": "arithmetic" if prov == "real" else "proxy",
+            })
 
     # ---- the ceiling, and the product stop -------------------------------------------
     rivals = _archetype_rivals(b.archetype_id, limit=4)

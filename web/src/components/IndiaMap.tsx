@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react'
+import React, { useMemo, useRef, useState, useEffect, useId } from 'react'
 import { fmt } from '../lib/api'
 
 type Level = 'india' | 'state' | 'district' | 'village'
@@ -50,6 +50,9 @@ export default function IndiaMap({
   const [loading, setLoading] = useState(false)
   const [hover, setHover] = useState<{ s: Shape; x: number; y: number } | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
+  // Same trick GeoMap uses for the national outline: dilate the states' merged alpha and
+  // flood it, rather than computing a real polygon union.
+  const borderId = 'border-' + useId().replace(/:/g, '')
 
   useEffect(() => {
     const qs = new URLSearchParams()
@@ -178,6 +181,22 @@ export default function IndiaMap({
                 <path d={toPath(data.outline)} />
               </clipPath>
             )}
+            {level === 'india' && (
+              // National outline with no extra geometry: dilate the states' merged alpha
+              // and flood it, so the true outer edge of the country gets painted without
+              // computing a real polygon union.
+              <filter id={borderId} filterUnits="userSpaceOnUse" x={-50} y={-50} width={1100} height={1100}>
+                <feColorMatrix in="SourceAlpha" type="matrix"
+                  values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 40 0" result="solid" />
+                <feMorphology in="solid" operator="dilate" radius="6" result="dilated" />
+                <feFlood result="edgeColor" style={{ floodColor: 'var(--map-edge)' }} />
+                <feComposite in="edgeColor" in2="dilated" operator="in" result="edge" />
+                <feMerge>
+                  <feMergeNode in="edge" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            )}
           </defs>
 
           {/* block Voronoi, clipped to the district's real edge */}
@@ -193,6 +212,7 @@ export default function IndiaMap({
           )}
 
           {/* polygons for india / state */}
+          <g filter={level === 'india' ? `url(#${borderId})` : undefined}>
           {(level === 'india' || level === 'state') && data.features.map(f => {
             const dim = level === 'india' && !f.pilot
             return (
@@ -204,6 +224,7 @@ export default function IndiaMap({
                     onMouseMove={e => !dim && move(e, f)} />
             )
           })}
+          </g>
 
           {/* district outline drawn on top so the real boundary stays legible */}
           {level === 'district' && data.outline && (

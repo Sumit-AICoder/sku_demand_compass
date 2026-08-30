@@ -7,6 +7,7 @@ import { api, fmt } from '../lib/api'
 import { Card, Async, useAsync, Kpi, Info, Bar, TIP } from './common'
 import { GeoMap, MapPoint } from './GeoMap'
 import { ArchetypePicker, useArchetypes, BUCKET_COLOR } from './ActPicker'
+import ArchetypeSkus from './ArchetypeSkus'
 
 /**
  * ACT · Archetype summary — the Summary page, scoped to one archetype.
@@ -240,6 +241,8 @@ export default function ActSummary() {
                 )}</Async>
               </Card>
             </div>
+
+            <ArchetypeSkus archetypeId={sel} />
 
             <Card title={<>The next six months<Info wide text={<>
                   This archetype's slice of the district forecast: implement demand month by

@@ -85,6 +85,12 @@ export const api = {
   ucmDiagnostics: () => get<any>('/ucm/diagnostics'),
   clusters: () => get<any[]>('/clusters'),
   clusterSkus: (id: number) => get<any[]>(`/clusters/${id}/skus`),
+  archetypeSkus: (archetype_id: string, limit?: number) =>
+    get<any[]>(`/archetypes/${archetype_id}/skus`, { limit }),
+  bucketSkus: (bucket: string, limit?: number) =>
+    get<any[]>(`/plan/buckets/${bucket}/skus`, { limit }),
+  archetypeRivalsBySku: (archetype_id: string, limit?: number) =>
+    get<any[]>(`/archetypes/${archetype_id}/rivals-by-sku`, { limit }),
   whitespace: (p: { cluster_id?: number; state?: string; limit?: number }) =>
     get<any[]>('/whitespace', p),
   lookalike: (village_id: string, n = 20) => get<any[]>('/lookalike', { village_id, n }),

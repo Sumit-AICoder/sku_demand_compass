@@ -4,7 +4,9 @@ import {
   ReferenceLine, Legend, BarChart, Bar as RBar, Cell,
 } from 'recharts'
 import { api, fmt } from '../lib/api'
-import { Card, useAsync, Kpi, Info, TIP } from './common'
+import { useStore } from '../lib/store'
+import { Card, Async, useAsync, Kpi, Info, TIP, Bar } from './common'
+import { ArchetypePicker } from './ActPicker'
 
 /**
  * PLAN · Forecast — six months forward, and what the sliders do to it.
@@ -32,36 +34,56 @@ const FACTORS: Array<[string, string]> = [
   ['F10', 'Distribution'],
 ]
 const STATES = ['Punjab', 'Madhya Pradesh', 'Maharashtra']
+const BUCKETS = ['Grow', 'Defend', 'No product fit']
 
 export default function Forecast() {
+  const { productLine } = useStore()
   const [shocks, setShocks] = useState<Record<string, number>>({})
   const [weights, setWeights] = useState<Record<string, number>>({})
   const [metric, setMetric] = useState('demand')
-  const [state, setState] = useState('')
-  const [run, setRun] = useState(0)                 // bumped to fire a request
+  const [scopeKind, setScopeKind] = useState<'all' | 'state' | 'bucket' | 'archetype'>('all')
+  const [stateSel, setStateSel] = useState(STATES[0])
+  const [bucketSel, setBucketSel] = useState(BUCKETS[0])
+  const buckets = useAsync(() => api.planBuckets({ product: productLine }),
+                           [productLine, scopeKind], scopeKind === 'archetype')
+  const archRows = buckets.data?.archetypes ?? []
+  const [archId, setArchId] = useState<string>()
+  const skuBasket = useAsync(() => api.archetypeSkus(archId!, 50), [archId, scopeKind],
+                             scopeKind === 'archetype' && !!archId)
+  const [skuId, setSkuId] = useState<string>()
+  const chosenArch = archRows.find((r: any) => r.archetype_id === archId)
 
-  // Sliders are cheap to move and the request is one mart read, so the chart follows the
-  // sliders. `run` still exists for the deliberate case (and the factor-weight path,
-  // which re-scores village demand and is genuinely slow).
+  const state = scopeKind === 'state' ? stateSel : undefined
+  const bucket = scopeKind === 'bucket' ? bucketSel : undefined
+  const archetypeId = scopeKind === 'archetype' ? archId : undefined
+  const skuIdSel = scopeKind === 'archetype' ? skuId : undefined
+  const [run, setRun] = useState(0)                 // bumped only by Run scenario / Reset
+  // Snapshot of the shocks/weights the chart currently reflects. Sliders only ever write
+  // to `shocks`/`weights` above; nothing recomputes until Run copies them in here.
+  const [applied, setApplied] = useState<{ shocks: Record<string, number>; weights: Record<string, number> }>(
+    { shocks: {}, weights: {} })
+
   const body = useMemo(() => ({
-    shocks, weights, metric, state: state || undefined,
-  }), [run, metric, state])                          // eslint-disable-line react-hooks/exhaustive-deps
+    shocks: applied.shocks, weights: applied.weights, metric,
+    state, bucket, archetype_id: archetypeId, sku_id: skuIdSel, product: productLine,
+  }), [run, metric, scopeKind, stateSel, bucketSel, archId, skuId, productLine]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = useAsync(() => api.planForecast(body), [body])
-  useEffect(() => {                                  // debounce slider drags into one call
-    const t = setTimeout(() => setRun(r => r + 1), 350)
-    return () => clearTimeout(t)
-  }, [JSON.stringify(shocks), JSON.stringify(weights)])
 
   // useAsync clears its data while refetching, which would blank the whole screen —
-  // sliders included — every time one is dragged. Hold the last good response and keep
+  // sliders included — every time Run fires. Hold the last good response and keep
   // rendering it; only the "updating…" hint changes.
   const [last, setLast] = useState<any>()
   useEffect(() => { if (f.data) setLast(f.data) }, [f.data])
   const d = f.data ?? last
 
-  const dirty = Object.keys(shocks).length > 0 || Object.keys(weights).length > 0
-  const reset = () => { setShocks({}); setWeights({}) }
+  const runScenario = () => { setApplied({ shocks, weights }); setRun(r => r + 1) }
+  const reset = () => {
+    setShocks({}); setWeights({}); setApplied({ shocks: {}, weights: {} }); setRun(r => r + 1)
+  }
+  const pending = JSON.stringify(shocks) !== JSON.stringify(applied.shocks)
+               || JSON.stringify(weights) !== JSON.stringify(applied.weights)
+  const dirty = Object.keys(applied.shocks).length > 0 || Object.keys(applied.weights).length > 0
 
   return (
     <div className="grid" style={{ gap: 14 }}>
@@ -95,11 +117,14 @@ export default function Forecast() {
             <div className="grid g4">
               <Kpi k="Next 6 months, baseline" v={fmt.units(t.baseline)} s={d.unit} />
               <Kpi k="Scenario" v={fmt.units(t.scenario)}
-                   s={dirty ? `${t.delta_pct > 0 ? '+' : ''}${t.delta_pct}% vs baseline` : 'move a slider'} />
+                   s={pending ? 'sliders changed — click Run scenario'
+                      : dirty ? `${t.delta_pct > 0 ? '+' : ''}${t.delta_pct}% vs baseline` : 'move a slider'} />
               <Kpi k="90% band" v={`${t.ci_low_pct}% … ${t.ci_high_pct}%`}
                    s="from the estimated standard errors" />
-              <Kpi k="Scope" v={state || 'All three states'}
-                   s={`${d.scope.districts} districts · history to ${d.history_ends}`} />
+              <Kpi k="Scope" v={d.scope.sku_name ?? state ?? bucket ?? chosenArch?.base_name ?? 'All three states'}
+                   s={d.scope.sku_name
+                      ? `${d.scope.sku_share_pct}% of ${chosenArch?.base_name ?? 'this archetype'}'s basket · ${d.scope.districts} districts`
+                      : `${d.scope.districts} districts · history to ${d.history_ends}`} />
             </div>
 
             <Card
@@ -111,6 +136,9 @@ export default function Forecast() {
                   assumptions applied through each district's own elasticity. The shaded band
                   is the 90% interval: the forecast's own uncertainty, widened by the
                   uncertainty in the driver effects you dialled in.
+                  {d.scope.sku_name && <> <b>Picking a SKU allocates</b> the archetype's own
+                  forecast shape and shock-sensitivity to that product's static demand
+                  share — it is not a forecast fitted on that SKU's own history.</>}
                 </>} /></>}
               note={`${d.unit} · shaded band is the 90% interval · the rule marks where history ends`}>
               <div className="row" style={{ gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -118,10 +146,40 @@ export default function Forecast() {
                   <option value="demand">Implement demand (units/mo)</option>
                   <option value="registrations">Tractor registrations (TIV added/mo)</option>
                 </select>
-                <select value={state} onChange={e => setState(e.target.value)}>
-                  <option value="">All three states</option>
-                  {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                <select value={scopeKind} onChange={e => {
+                  setScopeKind(e.target.value as any); setArchId(undefined); setSkuId(undefined)
+                }}>
+                  <option value="all">All three states</option>
+                  <option value="state">By state</option>
+                  <option value="bucket">By bucket</option>
+                  <option value="archetype">By archetype</option>
                 </select>
+                {scopeKind === 'state' && (
+                  <select value={stateSel} onChange={e => setStateSel(e.target.value)}>
+                    {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                )}
+                {scopeKind === 'bucket' && (
+                  <select value={bucketSel} onChange={e => setBucketSel(e.target.value)}>
+                    {BUCKETS.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                )}
+                {scopeKind === 'archetype' && (
+                  <>
+                    <Async state={buckets}>{() => (
+                      <ArchetypePicker rows={archRows} sel={archId}
+                                       setSel={id => { setArchId(id); setSkuId(undefined) }} />
+                    )}</Async>
+                    {archId && (
+                      <select value={skuId ?? ''} onChange={e => setSkuId(e.target.value || undefined)}>
+                        <option value="">Whole archetype</option>
+                        {(skuBasket.data ?? []).map((s: any) => (
+                          <option key={s.sku_id} value={s.sku_id}>{s.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </>
+                )}
                 {f.loading && <span className="dim" style={{ fontSize: 12 }}>updating…</span>}
               </div>
               <ResponsiveContainer width="100%" height={300}>
@@ -147,6 +205,42 @@ export default function Forecast() {
                 </ComposedChart>
               </ResponsiveContainer>
             </Card>
+
+            {!!d.by_category?.length && (
+              <Card
+                title={<>Forecast by category
+                  <Info wide text={<>
+                    <b>An allocated split, not a second model.</b> The UCM forecasts one
+                    aggregate series per district — it has no product dimension of its own.
+                    Each category's slice here is its static share of this scope's demand,
+                    shaped by that category's own SKUs' seasonal index, then rescaled so
+                    every row sums exactly back to the baseline total above. One caveat
+                    worth naming: the seasonal shape is a single national curve, not
+                    district-specific, and shares are held static across the six months.
+                  </>} /></>}
+                note="6-month baseline total, split by category · allocated">
+                <table>
+                  <thead><tr>
+                    <th>Category</th>
+                    <th style={{ textAlign: 'right' }}>Units, 6mo</th>
+                    <th style={{ textAlign: 'right' }}>Share</th>
+                    <th style={{ width: 90 }} />
+                    <th>Peaks in</th>
+                  </tr></thead>
+                  <tbody>
+                    {d.by_category.map((c: any) => (
+                      <tr key={c.category}>
+                        <td>{c.category_label}</td>
+                        <td style={{ textAlign: 'right' }}>{fmt.units(c.units_6mo)}</td>
+                        <td style={{ textAlign: 'right' }}>{c.share_pct}%</td>
+                        <td><Bar value={c.units_6mo} max={d.by_category[0].units_6mo} /></td>
+                        <td className="dim">{c.peak_month}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            )}
 
             <div className="split">
               <Card title="Driver shocks" note="in standard deviations from normal">
@@ -191,7 +285,7 @@ export default function Forecast() {
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setRun(r => r + 1)}
+              <button onClick={runScenario}
                       style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid var(--accent)',
                                background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
                 Run scenario

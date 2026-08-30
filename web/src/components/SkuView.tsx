@@ -6,14 +6,26 @@ import { useStore } from '../lib/store'
 import { Card, Async, useAsync, Badge, Bar } from './common'
 import Narrative from './Narrative'
 import SkuImage from './SkuImage'
+import { ArchetypePicker } from './ActPicker'
+
+const BUCKETS = ['Grow', 'Defend', 'No product fit'] as const
 
 export default function SkuView() {
-  const { category, setSku } = useStore()
-  const [scope, setScope] = useState<'state' | 'district'>('state')
-  const geo = useAsync(() => api.geo(scope === 'state' ? 'state' : 'district', {}), [scope])
+  const { category, setSku, productLine } = useStore()
+  const [scope, setScope] = useState<'state' | 'district' | 'bucket' | 'archetype'>('state')
+  const geo = useAsync(() => api.geo(scope === 'state' ? 'state' : 'district', {}),
+                       [scope], scope === 'state' || scope === 'district')
   const [nodeId, setNodeId] = useState<string>()
-  const rows = useAsync(() => api.scores({ level: scope, id: nodeId, category, limit: 40 }),
-                        [scope, nodeId, category])
+  const [bucket, setBucket] = useState<typeof BUCKETS[number]>('Grow')
+  const buckets = useAsync(() => api.planBuckets({ product: productLine }),
+                           [productLine, scope], scope === 'archetype')
+  const archRows = buckets.data?.archetypes ?? []
+  const [archId, setArchId] = useState<string>()
+  const rows = useAsync(
+    () => scope === 'bucket' ? api.bucketSkus(bucket, 40)
+        : scope === 'archetype' ? api.archetypeSkus(archId!, 40)
+        : api.scores({ level: scope, id: nodeId, category, limit: 40 }),
+    [scope, nodeId, category, bucket, archId], scope !== 'archetype' || !!archId)
 
   return (
     <div className="grid" style={{ gap: 14 }}>
@@ -22,22 +34,38 @@ export default function SkuView() {
         <select value={scope} onChange={e => { setScope(e.target.value as any); setNodeId(undefined) }}>
           <option value="state">By state</option>
           <option value="district">By district</option>
+          <option value="bucket">By bucket — Defend/Grow/No fit</option>
+          <option value="archetype">By archetype</option>
         </select>
-        <select value={nodeId ?? ''} onChange={e => setNodeId(e.target.value || undefined)}>
-          <option value="">All {scope}s</option>
-          {(geo.data?.items ?? []).map(i =>
-            <option key={i.id} value={i.id}>{i.name}{i.parent ? ` — ${i.parent}` : ''}</option>)}
-        </select>
+        {scope === 'bucket' ? (
+          <select value={bucket} onChange={e => setBucket(e.target.value as any)}>
+            {BUCKETS.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        ) : scope === 'archetype' ? (
+          <Async state={buckets}>{() => (
+            <ArchetypePicker rows={archRows} sel={archId} setSel={setArchId} />
+          )}</Async>
+        ) : (
+          <select value={nodeId ?? ''} onChange={e => setNodeId(e.target.value || undefined)}>
+            <option value="">All {scope}s</option>
+            {(geo.data?.items ?? []).map(i =>
+              <option key={i.id} value={i.id}>{i.name}{i.parent ? ` — ${i.parent}` : ''}</option>)}
+          </select>
+        )}
         <span className="note">
-          New demand is unserved headroom converting this year; replacement is the
-          installed base retiring on its life cycle.
+          {scope === 'bucket'
+            ? 'Which products carry the Grow list, what Defend already holds, and what doesn’t fit at all.'
+            : scope === 'archetype'
+            ? 'Every SKU in the selected archetype’s own basket, ranked by weighted demand.'
+            : 'New demand is unserved headroom converting this year; replacement is the installed base retiring on its life cycle.'}
         </span>
       </div>
 
       <Card title="SKU demand potential" tight
             note="click a SKU to filter every other view">
         <div className="tbl-wrap" style={{ maxHeight: 560 }}>
-          <Async state={rows}>{(r: any[]) => {
+          <Async state={rows} empty={scope === 'archetype' && !archId ? 'Select an archetype above.' : undefined}>
+            {(r: any[]) => {
             const max = Math.max(...r.map(x => x.units), 1)
             return <table>
               <thead><tr>

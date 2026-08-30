@@ -41,8 +41,33 @@ export default function WhatDrivesSales() {
   const pooled = useAsync(() => api.archetypeUcmElasticities(), [])
   const diagAll = useAsync(() => api.archetypeUcmDiagnostics(), [])
 
+  // Archetype × SKU: the UCM has no product dimension of its own (one series per
+  // archetype, everything it sells combined) -- picking a SKU allocates the archetype's
+  // curve by that SKU's static demand share. Every numeric field scales by the same
+  // constant, so the additive identity (baseline + uplifts = predicted) holds exactly
+  // regardless of which SKU is picked, same as at the archetype level.
+  const skus = useAsync(() => api.archetypeSkus(chosen!, 50), [chosen], !!chosen)
+  const basket = skus.data ?? []
+  const [skuId, setSkuId] = useState<string>()
+  const skuShare = useMemo(() => {
+    if (!skuId) return 1
+    const tot = basket.reduce((s: number, x: any) => s + x.units, 0)
+    const mine = basket.find((x: any) => x.sku_id === skuId)?.units ?? 0
+    return tot ? mine / tot : 0
+  }, [skuId, basket])
+  const skuName = basket.find((x: any) => x.sku_id === skuId)?.name
+
   const full = dec.data?.series ?? []
-  const windowed = useMemo(() => full.slice(-windowDays), [full, windowDays])
+  const scaledFull = useMemo(() => {
+    if (skuShare === 1) return full
+    const fields = ['actual_sales', 'predicted', 'baseline', ...Object.keys(UPLIFT_LABEL).map(k => `uplift_${k}`)]
+    return full.map((r: any) => {
+      const out: any = { date: r.date }
+      for (const f of fields) out[f] = r[f] != null ? r[f] * skuShare : r[f]
+      return out
+    })
+  }, [full, skuShare])
+  const windowed = useMemo(() => scaledFull.slice(-windowDays), [scaledFull, windowDays])
   const d = dec.data?.diagnostics
 
   const upliftKeys = Object.keys(UPLIFT_LABEL)
@@ -54,12 +79,16 @@ export default function WhatDrivesSales() {
         Sonalika has no real daily/weekly feed, only the annual estimates used on the other
         Review tabs (this panel's annual totals tie back to those). The model is fit in{' '}
         <b>sales units</b> (not log), so Baseline + every factor's uplift add up to Predicted
-        exactly, and <b>Competitor</b> pressure is built to carry a negative effect.
+        exactly, and <b>Competitor</b> pressure is built to carry a negative effect — which is
+        exactly why Predicted can dip <i>below</i> Baseline: whenever competitor pressure and/or
+        hot weather outweigh the positive effects (holiday, promotion, price cuts) on a given
+        day, that's the model naming a real headwind, not an error in the chart.
       </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <Async state={archList}>{() => (
-          <select value={chosen ?? ''} onChange={e => setAid(e.target.value)} style={{ minWidth: 260 }}>
+          <select value={chosen ?? ''} onChange={e => { setAid(e.target.value); setSkuId(undefined) }}
+                  style={{ minWidth: 260 }}>
             {archetypes.map((a: any) => (
               <option key={a.archetype_id} value={a.archetype_id}>
                 {a.base_name} · {a.hp_belt} — {a.diagnosis}
@@ -67,6 +96,11 @@ export default function WhatDrivesSales() {
             ))}
           </select>
         )}</Async>
+        <select value={skuId ?? ''} onChange={e => setSkuId(e.target.value || undefined)}
+                style={{ minWidth: 200 }}>
+          <option value="">Whole archetype</option>
+          {basket.map((s: any) => <option key={s.sku_id} value={s.sku_id}>{s.name}</option>)}
+        </select>
         <div className="switch">
           {WINDOWS.map(w => (
             <button key={w} className={windowDays === w ? 'on' : ''} onClick={() => setWindowDays(w)}>
@@ -89,6 +123,17 @@ export default function WhatDrivesSales() {
           <Kpi k="Additive identity" v={d.identity_ok ? 'holds exactly' : 'error'}
                s={`max error ${d.identity_max_abs_error?.toExponential?.(1) ?? d.identity_max_abs_error}`} />
         </div>
+      )}
+      {skuName && (
+        <p className="note">
+          <span className="pill pill-secondary">allocated</span> Showing{' '}
+          <b>{skuName}</b>'s static share ({(skuShare * 100).toFixed(1)}%) of this
+          archetype's demand, scaled onto the archetype's own curve — the SKU gets the
+          archetype's shape and factor-sensitivity, not its own fitted seasonality. Model
+          fit / WAPE / identity above describe the archetype-level fit and don't change
+          with the SKU picked (scaling every term by the same constant keeps the additive
+          identity exact either way).
+        </p>
       )}
 
       <Card title="Panel 1 — Actual vs Predicted vs Baseline"

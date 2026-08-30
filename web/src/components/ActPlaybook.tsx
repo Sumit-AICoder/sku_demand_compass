@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api, fmt } from '../lib/api'
 import { Card, Async, useAsync, Kpi, Info, Bar } from './common'
 import { ArchetypePicker, useArchetypes, BUCKET_COLOR } from './ActPicker'
+import ArchetypeSkus, { useArchetypeBasket } from './ArchetypeSkus'
 
 /**
  * ACT · Playbook — what to do in one archetype, and what each action is worth.
@@ -30,19 +31,13 @@ const BARRIERS = [
 
 export default function ActPlaybook() {
   const { b, rows, sel, setSel, chosen } = useArchetypes()
+  const basket = useArchetypeBasket(sel)
   const [barrier, setBarrier] = useState('finance')
   const [approval, setApproval] = useState<number>()
   const [awareness, setAwareness] = useState(0.38)
   const [density, setDensity] = useState(20)
   const [activity, setActivity] = useState(25)
-  const [run, setRun] = useState(0)
-
-  // Debounce the sliders into one request, and keep the last good answer on screen while
-  // the next one lands so the panel never blanks mid-drag.
-  useEffect(() => {
-    const t = setTimeout(() => setRun(r => r + 1), 300)
-    return () => clearTimeout(t)
-  }, [barrier, approval, awareness, density, activity])
+  const [run, setRun] = useState(0)                 // bumped only by the Run button
 
   const p = useAsync(() => api.actPlaybook({
     archetype_id: sel,
@@ -153,9 +148,13 @@ export default function ActPlaybook() {
                 </div>
                 <p className="note" style={{ marginTop: 8 }}>
                   Today's loan approval across this archetype's villages is{' '}
-                  <b>{(d.situation.approval_rate * 100).toFixed(0)}%</b>.{' '}
-                  {p.loading && <span className="dim">updating…</span>}
+                  <b>{(d.situation.approval_rate * 100).toFixed(0)}%</b>.
                 </p>
+                <button onClick={() => setRun(r => r + 1)}
+                        style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid var(--accent)',
+                                 background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+                  {p.loading ? 'Running…' : 'Run playbook'}
+                </button>
               </Card>
 
               <Card title={<>Who we are up against<Info wide text={<>
@@ -185,11 +184,15 @@ export default function ActPlaybook() {
               </Card>
           </div>
 
+          <ArchetypeSkus archetypeId={sel} />
+
           <Card title={<>Recommended plays<Info wide text={<>
                   Each play names the one mechanism it moves and is priced in units a year at
                   this archetype's own rates. “TIV reached” is the fleet an action brings
                   within commercial reach — only the network play changes that, so the others
-                  read “—” rather than borrow a number that isn't theirs.</>} /></>}
+                  read “—” rather than borrow a number that isn't theirs. Below the plays,
+                  the archetype's own SKU basket continues as product rows — what to
+                  actually sell, and the rival threshold each product is up against.</>} /></>}
                   note={`${d.plays.length} plays · ranked`}>
               <table>
                 <thead><tr>
@@ -232,6 +235,36 @@ export default function ActPlaybook() {
                       </td>
                     </tr>
                   ))}
+                  {!!basket.data?.length && (
+                    <>
+                      <tr><td colSpan={5} className="dim" style={{ fontSize: 11, paddingTop: 16 }}>
+                        Product recommendations — this archetype's own SKU basket, ranked by weighted demand
+                      </td></tr>
+                      {basket.data.map((x: any, _i: number, arr: any[]) => {
+                        const maxU = Math.max(1, ...arr.map((s: any) => s.units || 0))
+                        const push = x.units >= maxU * 0.25 && (x.subsidy_pct ?? 0) >= 40
+                        const rivalText = x.rivals.length
+                          ? `Contested by ${x.rivals.map((rv: any) =>
+                              `${rv.rival} (${fmt.count(rv.winnable)} winnable / ${fmt.count(rv.at_risk)} at risk)`
+                            ).join(', ')}.`
+                          : 'No significant rival contest recorded.'
+                        return (
+                          <tr key={x.sku_id}>
+                            <td>
+                              <b>{push ? `Push ${x.name}` : x.name}</b>
+                              {x.subsidy_pct != null &&
+                                <span className="dim"> — {x.subsidy_pct}% {x.subsidy_provenance === 'real' ? 'real' : 'proxy'} subsidy</span>}
+                              <div className="dim" style={{ fontSize: 11 }}>{rivalText}</div>
+                            </td>
+                            <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{fmt.count(x.units)}</td>
+                            <td style={{ textAlign: 'right' }}>{(x.units / d.situation.demand * 100).toFixed(2)}</td>
+                            <td style={{ textAlign: 'right' }}>—</td>
+                            <td>—</td>
+                          </tr>
+                        )
+                      })}
+                    </>
+                  )}
                 </tbody>
               </table>
               <div className="conf-key">

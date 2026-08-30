@@ -79,10 +79,10 @@ const STAGES: Stage[] = [
       ['where', 'Market prioritisation'],
       ['forecast', 'Demand forecast'],
       ['targets', 'Growth targets'],
+      ['sku', 'Focus products'],
+      ['priorities', 'Prioritise & subsidy'],
       // Hidden, not decommissioned -- still routable, one `true` from returning.
-      ['priorities', 'Prioritise & subsidy', true],
       ['overview', 'Demand map', true],
-      ['sku', 'Focus products', true],
       ['scenario', 'What-if & forecast', true],
     ],
   },
@@ -152,6 +152,12 @@ const VIEW_INFO: Record<string, React.ReactNode> = {
     it back-solves the enquiries and BD activities needed at that archetype's own
     conversion rates, then ranks the levers — more activity, better conversion, wider
     dealer coverage — by how much each closes the gap.</>,
+  sku: <>Every SKU ranked by demand potential, split into new vs replacement, with
+    penetration and value. Click a SKU to filter every other view by it — this is the
+    product-level view under Plan's archetype-level numbers.</>,
+  priorities: <>Focus products ranked by demand against the real subsidy lever, flagging
+    which to push now, next to district priorities weighed against real cropland — the
+    product-and-district shortlist to act on.</>,
 }
 
 export default function App() {
