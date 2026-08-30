@@ -108,9 +108,6 @@ def build() -> None:
                 if SRC_FALLBACK.exists() else [])
 
     districts = read_table(CURATED / "geo_districts.parquet")
-    totals = read_table(MARTS / "district_totals.parquet")[
-        ["district_id", "potential_units_yr"]]
-    districts = districts.merge(totals, on="district_id", how="left")
 
     from pipeline.transform.geo_spine import _match_geometry, _norm
     geo_index = {}

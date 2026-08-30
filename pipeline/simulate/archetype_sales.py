@@ -84,7 +84,12 @@ def _mean_temp_by_archetype(mm: pd.DataFrame) -> dict[str, float]:
 
 def build() -> pd.DataFrame:
     t0 = time.time()
-    arch = read_table(MARTS / "archetype_ops.parquet")
+    # archetype_ops has one row per (archetype_id, product_line) -- this daily story is
+    # per-archetype only (ties to a single deliveries_yr total per the docstring above),
+    # so collapse lines here rather than let a duplicate archetype_id leak downstream.
+    arch = (read_table(MARTS / "archetype_ops.parquet")
+            .groupby("archetype_id", as_index=False)
+            .agg(deliveries_yr=("deliveries_yr", "sum"), diagnosis=("diagnosis", "first")))
     mm = read_table(MARTS / "micromarkets.parquet")
     ps = read_table(MARTS / "player_shares.parquet")
 
