@@ -42,7 +42,7 @@ than a flat pile of tabs:
 | **1 Define** | What distinct micro-markets exist, basis similarity? | Archetypes and their mapped micro-markets |
 | **2 Review** | Where are we underperforming — sales issue or product issue? | Archetype trends and quantified gaps |
 | **3 Plan** | Where and what should we focus on? | Forecast, priority archetypes, targets |
-| **4 Develop** | What strategy will unlock growth? | Archetype playbooks |
+| **4 Act** | What do we actually do here, and how exactly do we do it? | An execution playbook across seven use cases, priced and sequenced |
 
 Clicking a stage jumps to its first view; a sub-nav then switches between the views
 inside that stage. A banner restates the stage's question and output so you never lose
@@ -356,22 +356,66 @@ across states *is* the insight, not a rounding artefact.
 
 ---
 
-## Stage 4 · Develop
+## Stage 4 · Act
 
-### Playbooks — `Playbooks.tsx`
-*Build differentiated playbooks*
+### Playbook — `ActPlaybook.tsx`, `api/playbook.py`
+*Build the archetype playbook, then work it*
 
-Pick an archetype, get a commercial plan: root cause, what customers say, primary enabler,
-recommended action, plus four strategy cells (network, subsidy focus, engagement/beat plan,
-content strategy).
+One page. It answers the question the client actually asked — *"for this archetype, these
+are the 10 things I want to do"* — organised as the seven use cases the business team
+defined: **Network Expansion & Development, Customer growth, Product development,
+Inventory, Activity Plan, Sales planning, Incentives & Consumer Schemes**.
 
-Be clear-eyed about this page's status. The root causes come from a **primary survey that
-hasn't been run yet**, so they're placeholders drawn from a hardcoded four-item list in the
-component and rotate by archetype index. They're badged `EY primary · modelled` and will
-hot-swap when the study lands. The enablers it recommends (network, subsidy) do draw on
-real data.
+**Scope.** Pick a bucket, then an archetype, then optionally narrow to one of its districts
+and then to a single micro-market. Everything below recomputes for what you select — the
+funnel, the survey, the rivals, and every play. Bucket, leader and rank stay archetype
+properties and the page says so, because narrowing does not re-run the bucket rule.
 
-Of the four stages, this is the least built out — one view against Define's four.
+**What customers here are telling us.** The primary study has not run, so this layer is
+modelled from `village_factors`, whose 44 sub-factors are percentile-ranked 0–100 across
+every village in the country. A score of 72 means the scope sits at the 72nd percentile
+nationally — a statement about real data rather than an invented survey response. It
+produces purchase drivers, a happy/unhappy split with the top praise and top complaint,
+buying behaviour (own vs hire, credit-led, scheme-led, peak month, who they listen to),
+channel mix, switching triggers and unmet product needs. **Every line names the sub-factor
+and percentile it came from**, on hover. Badged `EY primary · modelled`; it hot-swaps at
+one function when the study lands.
+
+The loudest complaint sets the `top_barrier`, and that re-orders the seven cards so the one
+answering it leads. This is the client's own worked example running end to end: where the
+data says running cost bites, Activity Plan leads and its themes become fuel-economy demos;
+where it says service and distance, Network Expansion leads. **Ordering never changes a
+units figure** — a dropdown lets you override the barrier and the numbers stay put.
+
+**The seven cards.** Each renders the slide's own bullets as sections — real dealer counts
+and whitespace for network, segments and stage-wise messages for customer growth, value
+propositions and feature gaps for product, stock norms and demo placement for inventory,
+themes and a 12-month beat plan for activity, back-solved targets and a dealer scorecard
+for sales, incentive triggers and scheme simulation for incentives.
+
+Cards also carry the **priced plays**, which are the same six mechanism plays as before —
+reach, approval, effort, execution, price, policy — each re-homed under the card that owns
+its mechanism. Every play appears in exactly one card, so the card totals still add to the
+growth total. Cards 2 and 4 carry no addend at all: they allocate and aim volume the other
+cards create. Each play now expands to an execution spec — objective, evidence, numbered
+steps with timing, the named micro-markets to do it in, cadence, owner and the KPI to
+watch.
+
+**Track playbook performance** turns the plays into a baseline → target table per use case,
+computed from the same numbers the plays are priced on. The actuals column stays empty
+until ITL supplies two years of activity, enquiry and delivery history.
+
+**The 10 things to do** stitches the cards into one sequence, ordered by when the work has
+to start rather than by what it is worth.
+
+Three honesty guards the page holds to: service coverage is a modelled index (ITL's service
+master will replace it); `demo_activity` is a marketing-effort index, not a fleet roster, so
+demo placement is a recommendation badged `ITL pending` and only shows on the tractor line;
+and a district absent from the dealer file reads `no data`, never "zero dealers".
+
+> The old **Archetype summary** view (`ActSummary.tsx`) and the original **Develop**
+> playbooks page are hidden rather than deleted — both are one `true` away from returning
+> in `App.tsx`'s `STAGES`, and `/api/act/summary` still serves.
 
 ---
 

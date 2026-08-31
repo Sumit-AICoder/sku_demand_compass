@@ -20,6 +20,7 @@
   --c1: #1f6feb; --c2: #16a085; --c3: #e67e22; --c4: #8e44ad;
   --c5: #c0392b; --c6: #2c8c99; --c7: #7f8c3a; --c8: #b5651d;
 
+  --line: #e3e7ec;          /* chart gridlines -- referenced by every CartesianGrid */
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16,32,48,.06), 0 4px 14px rgba(16,32,48,.05);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
@@ -28,7 +29,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1418; --panel: #161d23; --panel-2: #1b242c;
-    --border: #26313a; --border-strong: #35434f;
+    --border: #26313a; --border-strong: #35434f; --line: #26313a;
     --text: #e6edf3; --text-2: #9aa9b7; --text-3: #6e7f8e;
     --accent: #58a6ff; --accent-soft: #16273f;
     --good: #3fb950; --warn: #d29922; --bad: #f85149;
@@ -433,11 +434,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pill-secondary { background: #d1f2eb; color: #0b6b57; }     /* EY secondary */
 .pill-primary { background: #efe0fb; color: #6b3fa0; }       /* EY primary */
 .pill-real { background: #d7f2df; color: #1a7f4b; }          /* real data now */
+.pill-judgement { background: #fde2e2; color: #9b2c2c; }     /* our rule of thumb, no data */
 @media (prefers-color-scheme: dark) {
   .pill-client { background: #3a3320; color: #e6cf7a; }
   .pill-secondary { background: #123832; color: #5fd0b6; }
   .pill-primary { background: #2b2140; color: #c9a6f2; }
   .pill-real { background: #14331f; color: #6fdc8c; }
+  .pill-judgement { background: #3d1f1f; color: #f0a3a3; }
 }
 
 .stage-note { font-size: 12.5px; color: var(--text-2); background: var(--panel-2);
@@ -480,3 +483,143 @@ th.srt:hover { color: var(--accent); }
 .btn-ghost { background: none; color: var(--text-2); border: 1px solid var(--border-strong);
   border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
 .btn-ghost:disabled { opacity: .5; cursor: default; }
+
+/* ---------------------------------------------------------------- Act · playbook
+   The Act stage carries far more material than a dashboard screen, so it is paged rather
+   than stacked: an overview that reads in ten seconds, then one tab per use case. These
+   rules exist to keep depth reachable without putting all of it on screen at once. */
+
+.linkish { background: none; border: none; padding: 0; font: inherit; font-size: 12px;
+  color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+.pb-v { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
+
+/* --- scope + verdict, on every tab ------------------------------------------------ */
+.scope-bar { display: grid; gap: 8px; justify-items: center; padding: 11px 13px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+
+.verdict { border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius); background: var(--panel); padding: 10px 14px;
+  font-size: 13px; display: grid; gap: 3px; }
+.verdict .dim { font-size: 12px; }
+
+/* --- the tab strip ---------------------------------------------------------------- */
+.uc-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
+  border-bottom: 1px solid var(--border); }
+.uc-tabs button { display: inline-flex; align-items: center; gap: 6px; border: none;
+  background: none; color: var(--text-2); cursor: pointer; padding: 8px 11px;
+  font-size: 12.5px; border-bottom: 2px solid transparent; white-space: nowrap; }
+.uc-tabs button:hover { color: var(--text); }
+.uc-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.uc-tabs-sep { width: 1px; height: 16px; background: var(--border); margin: 0 7px; }
+
+.uc-n { display: inline-flex; align-items: center; justify-content: center;
+  width: 19px; height: 19px; border-radius: 50%; background: var(--accent); color: #fff;
+  font-size: 11px; font-weight: 700; margin-right: 7px; flex: none; }
+.uc-n.sm { width: 16px; height: 16px; font-size: 9.5px; margin-right: 0;
+  background: var(--border-strong); color: var(--panel); }
+.uc-tabs button.on .uc-n.sm { background: var(--accent); color: #fff; }
+
+/* --- overview: the customer strip and the seven tiles ----------------------------- */
+.signal-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px; }
+.signal-strip .dim { font-size: 11.5px; line-height: 1.5; margin-top: 3px; }
+
+.uc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 10px; }
+.uc-tile { text-align: left; font: inherit; color: inherit; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2);
+  padding: 11px 12px; display: grid; gap: 4px; align-content: start; }
+.uc-tile:hover { border-color: var(--accent); background: var(--panel); }
+.uc-tile-head { display: flex; align-items: center; font-size: 13px; font-weight: 650; }
+.uc-tile-v { font-size: 12.5px; }
+.uc-tile .dim { font-size: 11.5px; line-height: 1.5; }
+
+/* --- sections inside a use-case card ---------------------------------------------- */
+.uc-h { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.uc-summary { font-size: 13px; color: var(--text-2); margin: 0 0 14px; line-height: 1.6; }
+
+/* Two across, so a card reads as a page rather than a column of stretched tables. A wide
+   section -- anything with more than about five columns -- takes the full row instead. */
+.uc-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 26px; align-items: start; }
+.uc-section { min-width: 0; margin-top: 18px; }
+.uc-section.wide { grid-column: 1 / -1; }
+.uc-section > h4 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--text);
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.uc-empty { font-size: 12.5px; color: var(--text-3); line-height: 1.55;
+  background: var(--panel-2); border: 1px dashed var(--border-strong);
+  border-radius: 8px; padding: 10px 12px; margin: 0; }
+
+/* Wide tables scroll inside their own section rather than pushing the page sideways. */
+.uc-scroll { overflow-x: auto; }
+.uc-scroll table { min-width: 100%; }
+
+.uc-section .pb-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-top: 10px; }
+
+.uc-list { list-style: none; margin: 0; padding: 0; }
+.uc-list > li { border-left: 2px solid var(--border-strong); padding: 2px 0 2px 11px;
+  margin-bottom: 11px; font-size: 13px; line-height: 1.55; }
+.uc-list > li .dim { font-size: 12px; }
+
+.uc-tag { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 20px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text-3);
+  font-size: 10.5px; font-weight: 600; text-transform: none; letter-spacing: 0; }
+.uc-tag.good { color: var(--good); border-color: var(--good); }
+
+/* A disclosure for the bulk: the place lists, the tracking table, the assumptions. */
+.fold > summary { cursor: pointer; font-size: 12px; color: var(--text-2);
+  padding: 7px 0; user-select: none; }
+.fold > summary:hover { color: var(--text); }
+.fold[open] > summary { color: var(--text); font-weight: 600; }
+
+/* --- one priced play -------------------------------------------------------------- */
+.play { border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2);
+  margin-bottom: 14px; }
+.play-head { padding: 10px 13px; border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  flex-wrap: wrap; }
+.play-title { font-size: 13.5px; font-weight: 650; }
+.play-nums { font-size: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pill.conf { background: none; border: 1px solid; margin-left: 0; }
+
+.play-body { padding: 0 13px 13px; }
+.play-obj { font-size: 13px; line-height: 1.6; margin: 12px 0 0;
+  padding-left: 10px; border-left: 2px solid var(--accent); }
+.play-cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 20px; }
+.play-side .pb-grid { grid-template-columns: 1fr; }
+.play-block { margin-top: 15px; }
+.play-block > h5 { margin: 0 0 6px; font-size: 11px; font-weight: 650; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .05em; }
+.play-block ul, .play-block ol { margin: 0; padding-left: 18px; }
+.play-block li { font-size: 12.5px; line-height: 1.6; margin-bottom: 5px; }
+.play-steps > li { margin-bottom: 9px; }
+.play-steps > li .dim { font-size: 12px; }
+
+/* --- the modelled survey ---------------------------------------------------------- */
+.driver-row { display: grid; grid-template-columns: 190px 1fr 34px; gap: 9px;
+  align-items: center; font-size: 12.5px; padding: 5px 0; }
+.driver-row > span:last-child { grid-column: 1 / -1; font-size: 11px; padding-left: 2px;
+  color: var(--text-3); }
+
+.nps { display: flex; height: 12px; border-radius: 4px; overflow: hidden; margin-bottom: 7px;
+  border: 1px solid var(--border); }
+.nps > i { display: block; }
+
+/* --- the ten things --------------------------------------------------------------- */
+.action-list { margin: 0; padding-left: 22px; }
+.action-list > li { font-size: 13px; line-height: 1.6; margin-bottom: 12px; padding-left: 4px; }
+.action-list > li .dim { font-size: 11.5px; margin-top: 2px; }
+.action-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 1200px) {
+  .uc-sections { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 1000px) {
+  .play-cols { grid-template-columns: 1fr; gap: 0; }
+  .driver-row { grid-template-columns: 1fr 60px 34px; }
+}

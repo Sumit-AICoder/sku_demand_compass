@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from pipeline.common import CURATED, MARTS, CONFIG as ROOT_CFG, Config, Manifest
 from api import chat as chat_mod
-from api import llm, narrative
+from api import llm, narrative, playbook
 
 app = FastAPI(title="Sonalika Village-Level SKU Propensity API", version="0.1.0")
 app.add_middleware(
@@ -1358,6 +1358,18 @@ def _plan_buckets(line: str = "implements", fit_min: float = 0.55,
                   mode: str = "stronghold", defend_pct: float = 0.75) -> pd.DataFrame:
     """Bucket every archetype into Defend / Grow / No product fit.
 
+    Cached on the taxonomy in force plus the rule: it is a pure function of those, and the
+    Act playbook alone asks for it three times per request. Callers get a copy, because
+    several of them add columns to what they are handed.
+    """
+    return _plan_buckets_cached(_stamp(), line, fit_min, mode, defend_pct).copy()
+
+
+@lru_cache(maxsize=16)
+def _plan_buckets_cached(stamp: str, line: str, fit_min: float,
+                         mode: str, defend_pct: float) -> pd.DataFrame:
+    """The real work behind _plan_buckets.
+
     `mode="leader"` is the literal reading -- Defend only where Sonalika is the #1 OEM.
     On today's modelled shares that bucket comes back EMPTY: the unbranded "Local" segment
     leads all 53 archetypes and our share sits between 6.3% and 9.0% everywhere. So the
@@ -1433,16 +1445,23 @@ def plan_buckets(fit_min: float = 0.55, mode: str = "stronghold",
 
 
 @app.get("/api/plan/bucket/{archetype_id}/micromarkets")
-def plan_bucket_micromarkets(archetype_id: str, limit: int = 400):
-    """One archetype's micro-markets, descending by TIV, with the full BD funnel."""
+def plan_bucket_micromarkets(archetype_id: str, limit: int = 400,
+                             product: str = "implements"):
+    """One archetype's micro-markets, descending by TIV, with the full BD funnel.
+
+    `micromarket_ops` carries both product lines, so the line filter is not optional: without
+    it every micro-market came back twice, once with each line's funnel, and the map and the
+    Act scope selector both showed duplicates. `district_id` rides along because the Act
+    scope picker narrows by district before micro-market.
+    """
     rows = q("""
-        SELECT micro_market_id, district, state, n_villages, tiv, mean_hp, hp_belt,
-               sonalika_share, sonalika_sales_units, potential_units_yr,
+        SELECT micro_market_id, district_id, district, state, n_villages, tiv, mean_hp,
+               hp_belt, sonalika_share, sonalika_sales_units, potential_units_yr,
                activities_yr, enquiries_yr, deliveries_yr, conversion_rate,
                product_fit, dealer_accessibility, lon, lat
-        FROM micromarket_ops WHERE archetype_id = ?
+        FROM micromarket_ops WHERE archetype_id = ? AND product_line = ?
         ORDER BY tiv DESC LIMIT ?
-    """, [archetype_id, limit])
+    """, [archetype_id, _line(product), limit])
     return {"archetype_id": archetype_id, "provenance": "modelled", "micromarkets": rows}
 
 
@@ -1825,19 +1844,44 @@ def _approval_cached(stamp: str) -> pd.Series:
     return g["num"] / g["n"]
 
 
-def _archetype_rivals(archetype_id: str, limit: int = 6) -> list[dict]:
-    """Winnable and at-risk volume by rival inside one archetype.
+def _rival_scope(archetype_id: str, district_id: str | None = None,
+                 micro_market_id: str | None = None) -> pd.DataFrame:
+    """The micro-markets a rival query is scoped to.
+
+    Membership comes from the taxonomy in force, so this still finds the villages of an
+    archetype the mart has never seen. The optional narrowing is what lets the Act page
+    ask "who are we up against in THIS district" rather than always answering for the
+    whole archetype.
+    """
+    g = _current_grain()
+    g = g[g["archetype_id"] == archetype_id]
+    if district_id:
+        g = g[g["district_id"] == district_id]
+    if micro_market_id:
+        g = g[g["micro_market_id"] == micro_market_id]
+    return g[["micro_market_id", "district_id"]]
+
+
+def _archetype_rivals(archetype_id: str, limit: int = 6, district_id: str | None = None,
+                      micro_market_id: str | None = None) -> list[dict]:
+    """Winnable and at-risk volume by rival inside one archetype, or a slice of it.
 
     cannibal_ext is village x SKU (3.9M rows), so the district pre-filter matters: it cuts
-    the scan to the archetype's own districts before the village join.
+    the scan to the scope's own districts before the village join. Cached on the scope as
+    well, because the Act page re-asks the same question every time a slider moves.
     """
-    # The membership comes from the taxonomy in force, registered as a frame, so this still
-    # finds the villages of an archetype the mart has never seen.
-    g = _current_grain()
-    mm = g.loc[g["archetype_id"] == archetype_id, ["micro_market_id", "district_id"]]
+    return list(_archetype_rivals_cached(_stamp(), archetype_id, limit,
+                                         district_id, micro_market_id))
+
+
+@lru_cache(maxsize=64)
+def _archetype_rivals_cached(stamp: str, archetype_id: str, limit: int,
+                             district_id: str | None,
+                             micro_market_id: str | None) -> tuple:
+    mm = _rival_scope(archetype_id, district_id, micro_market_id)
     con().register("mm_sel", mm)
     try:
-        return clean(con().execute("""
+        return tuple(clean(con().execute("""
             WITH vv AS (SELECT v.village_id FROM village_micromarket v
                         JOIN mm_sel USING (micro_market_id))
             SELECT c.closest_rival AS rival,
@@ -1848,22 +1892,34 @@ def _archetype_rivals(archetype_id: str, limit: int = 6) -> list[dict]:
             FROM cannibal_ext c JOIN vv USING (village_id)
             WHERE c.district_id IN (SELECT DISTINCT district_id FROM mm_sel)
             GROUP BY 1 ORDER BY winnable DESC LIMIT ?
-        """, [limit]).fetchdf().to_dict("records"))
+        """, [limit]).fetchdf().to_dict("records")))
     finally:
         con().unregister("mm_sel")
 
 
-def _archetype_rivals_by_sku(archetype_id: str, limit: int = 20) -> list[dict]:
+def _archetype_rivals_by_sku(archetype_id: str, limit: int = 20,
+                            district_id: str | None = None,
+                            micro_market_id: str | None = None) -> list[dict]:
     """Same source as _archetype_rivals, not collapsed across our own SKUs -- "our SKU X:
     N units winnable from rival Y, M at risk to them". The rival side is always a brand
     (no rival product catalogue exists anywhere in this data); our own sku_id survives
     cannibal_ext's village x SKU grain, it's just thrown away by _archetype_rivals'
-    GROUP BY closest_rival alone."""
-    g = _current_grain()
-    mm = g.loc[g["archetype_id"] == archetype_id, ["micro_market_id", "district_id"]]
+    GROUP BY closest_rival alone.
+
+    Cached on the scope like _archetype_rivals: it is the same 3.9M-row mart, and the Act
+    page re-reads it on every slider move."""
+    return [dict(x) for x in _archetype_rivals_by_sku_cached(
+        _stamp(), archetype_id, limit, district_id, micro_market_id)]
+
+
+@lru_cache(maxsize=64)
+def _archetype_rivals_by_sku_cached(stamp: str, archetype_id: str, limit: int,
+                                    district_id: str | None,
+                                    micro_market_id: str | None) -> tuple:
+    mm = _rival_scope(archetype_id, district_id, micro_market_id)
     con().register("mm_sel", mm)
     try:
-        return clean(con().execute("""
+        return tuple(clean(con().execute("""
             WITH vv AS (SELECT v.village_id FROM village_micromarket v
                         JOIN mm_sel USING (micro_market_id))
             SELECT c.sku_id, r.name, c.closest_rival AS rival,
@@ -1872,7 +1928,7 @@ def _archetype_rivals_by_sku(archetype_id: str, limit: int = 20) -> list[dict]:
             WHERE c.district_id IN (SELECT DISTINCT district_id FROM mm_sel)
             GROUP BY 1, 2, 3 HAVING sum(c.winnable_units) > 0 OR sum(c.at_risk_units) > 0
             ORDER BY winnable + at_risk DESC LIMIT ?
-        """, [limit]).fetchdf().to_dict("records"))
+        """, [limit]).fetchdf().to_dict("records")))
     finally:
         con().unregister("mm_sel")
 
@@ -1988,238 +2044,22 @@ def act_summary(archetype_id: str, product: str = "implements"):
 
 # ---------------------------------------------------------------- act: the playbook
 
-class Assumptions(BaseModel):
-    """Survey-shaped inputs. No survey exists yet, so these are the user's own assumptions --
-    named on screen, and each one moves a specific number rather than a hidden weight."""
-    top_barrier: str = "finance"            # finance | service | awareness | product
-    approval_rate: float | None = None      # 0-1; defaults to the archetype's own mean
-    awareness: float = 0.38                 # 0-1; scales what extra BD activity yields
-    dealer_density_pct: float = 20.0        # the network expansion being priced
-    activity_uplift_pct: float = 25.0       # the BD push being priced
-
-
-class PlaybookReq(BaseModel):
-    archetype_id: str
-    assumptions: Assumptions = Field(default_factory=Assumptions)
+# The playbook is the one endpoint that writes a document rather than returning a mart, so
+# it lives in its own module. `Assumptions` and `PlaybookReq` are re-exported here because
+# the test suite and a couple of older call sites import them from `main`.
+Assumptions = playbook.Assumptions
+PlaybookReq = playbook.PlaybookReq
 
 
 @app.post("/api/act/playbook")
 def act_playbook(b: PlaybookReq, product: str = "implements"):
-    """Ranked, priced plays for one archetype.
+    """Ranked, priced plays for one scope, organised as the client's seven Act use cases.
 
-    Every play owns exactly one mechanism, which is what keeps the numbers addable:
-    the network play owns REACH (dealer accessibility), the finance play owns APPROVAL,
-    the activity play owns EFFORT at fixed rates, the conversion play owns whatever
-    execution quality is left after those two, price/promotion owns the UCM's own price and
-    promotion betas, and subsidy owns policy. The rival play is deliberately NOT an addend --
-    it is the ceiling the rest are measured against.
+    See `api/playbook.py` for the mechanics. Two things worth knowing from here: the scope
+    can narrow to a district or a single micro-market, and every play still owns exactly
+    one mechanism, so re-homing them across seven cards cannot double-count.
     """
-    line = _line(product)
-    a = b.assumptions
-    r = _archetype_row(b.archetype_id)
-    mm = con().execute("""
-        SELECT micro_market_id, tiv, dealer_accessibility, deliveries_yr, potential_units_yr,
-               sonalika_share, district, state
-        FROM micromarket_ops WHERE archetype_id = ?""", [b.archetype_id]).fetchdf()
-
-    demand = float(r["potential_units_yr"]) or 1.0
-    deliveries = float(r["deliveries_yr"])
-    enquiries = float(r["enquiries_yr"])
-    share = float(r["avg_sonalika_share"])
-    conv = float(r["conversion_rate"])
-    approval_now = float(_approval_by_archetype().get(b.archetype_id, 0.66))
-    # Default to a modest, stated improvement so the play is priced on first load; the panel
-    # shows both today's rate and the assumed one, so nothing is hidden.
-    approval_new = float(a.approval_rate) if a.approval_rate else min(approval_now + 0.05, 0.95)
-    basket = _archetype_sku_basket(b.archetype_id)
-
-    plays: list[dict] = []
-
-    # ---- 1. reach: more dealers -------------------------------------------------------
-    # Density scales distance by (1+dd)^-0.5 and accessibility = exp(-km/decay), so the new
-    # accessibility is the old one raised to that power. A micro-market that crosses _REACH
-    # is newly sellable; one already above it just gets easier to serve.
-    dd = max(a.dealer_density_pct, 0.0) / 100.0
-    acc = mm["dealer_accessibility"].to_numpy()
-    acc_new = np.power(np.clip(acc, 1e-6, 1.0), (1 + dd) ** -0.5)
-    crossed = (acc < _REACH) & (acc_new >= _REACH)
-    covered = acc >= _REACH
-    tiv_reached = float(mm.loc[crossed, "tiv"].sum())
-    new_demand = float((mm.loc[crossed, "potential_units_yr"] * share).sum())
-    access_lift = (0.55 + 0.45 * acc_new) / (0.55 + 0.45 * acc) - 1
-    easier = float((mm["deliveries_yr"].to_numpy() * access_lift * covered).sum())
-    if tiv_reached > 0 or easier > 0:
-        plays.append({
-            "play": f"Expand the dealer network {round(a.dealer_density_pct)}%",
-            "owns": "reach",
-            "detail": f"{int(crossed.sum())} micro-markets cross into commercial reach, "
-                      f"{fmt_units(tiv_reached)} tractors with them; the rest get easier to serve",
-            "units": round(new_demand + easier), "tiv_reached": round(tiv_reached),
-            "confidence": "estimated", "mode": "grow",
-        })
-
-    # ---- 2. approval: finance access --------------------------------------------------
-    # conv = approval x (0.55 + 0.45 x accessibility), so a proportional move in approval is a
-    # proportional move in conversion, and deliveries follow.
-    if approval_new > approval_now:
-        plays.append({
-            "play": f"Lift loan approval to {approval_new:.0%}",
-            "owns": "approval",
-            "detail": f"{approval_now:.0%} today across this archetype's villages; conversion "
-                      f"moves with it one-for-one in the model's own identity",
-            "units": round(deliveries * (approval_new / max(approval_now, 1e-6) - 1)),
-            "tiv_reached": None, "confidence": "estimated", "mode": "grow",
-        })
-
-    # ---- 3. effort: more BD activity at today's rates ---------------------------------
-    # Awareness scales what an extra visit yields; it is the one input with no data proxy
-    # anywhere in the repo, so it is labelled an assumption on screen.
-    up = max(a.activity_uplift_pct, 0.0) / 100.0
-    if up > 0:
-        yield_mult = 0.6 + 0.8 * float(np.clip(a.awareness, 0, 1))
-        plays.append({
-            "play": f"Run {round(a.activity_uplift_pct)}% more BD activities",
-            "owns": "effort",
-            "detail": f"{int(r['activities_yr'] * up):,} more activities a year at today's "
-                      f"{conv:.0%} conversion, scaled by the awareness assumption",
-            "units": round(deliveries * up * yield_mult),
-            "tiv_reached": None, "confidence": "arithmetic", "mode": "grow",
-        })
-
-    # ---- 4. execution quality: whatever peer conversion is left ------------------------
-    peers = _plan_buckets(line)
-    peers = peers[(peers["hp_belt"] == r["hp_belt"]) & (peers["archetype_id"] != b.archetype_id)]
-    peer_conv = float(peers["conversion_rate"].median()) if len(peers) else conv
-    claimed = sum(p["units"] for p in plays if p["owns"] in ("reach", "approval"))
-    residual = enquiries * max(peer_conv - conv, 0.0) - claimed
-    if residual > 0:
-        plays.append({
-            "play": "Close the rest of the conversion gap",
-            "owns": "execution",
-            "detail": f"{conv:.1%} today vs {peer_conv:.1%} across the {r['hp_belt']} belt, "
-                      f"after what reach and finance already explain",
-            "units": round(residual), "tiv_reached": None, "confidence": "arithmetic",
-            "mode": "grow",
-        })
-
-    # ---- 5. price and promotion, from this archetype's own betas ----------------------
-    betas = q("""SELECT regressor, beta, se, significant, sign_ok FROM ucm_arch_betas
-                 WHERE archetype_id = ? AND regressor IN ('price_drop_pct', 'is_promotion')""",
-              [b.archetype_id])
-    for bt in betas:
-        if not bt["significant"] or not bt["sign_ok"]:
-            continue
-        # A window, not the whole year: a 5% price action held for a quarter, or a
-        # month-long promotion. Pricing either at 365 days would be a fantasy.
-        move, days, label = ((5.0, 90, "Run a 5% price action for a quarter")
-                             if bt["regressor"] == "price_drop_pct"
-                             else (1.0, 30, "Run a month-long promotion"))
-        units_yr = float(bt["beta"]) * move * days
-        if units_yr <= 0:
-            continue
-        plays.append({
-            "play": label, "owns": "price",
-            "detail": f"this archetype's own estimated beta ({bt['beta']:.2f} units/day per "
-                      f"unit of driver) over {days} days, fitted on simulated daily history",
-            "units": round(units_yr), "tiv_reached": None, "confidence": "estimated",
-            "mode": "grow",
-        })
-
-    # ---- 6. subsidy, weighted by this archetype's own SKU basket ----------------------
-    # The basket already carries each SKU's own TIV-weighted subsidy rate (see
-    # _archetype_sku_basket); demand-weight those into one archetype-wide rate instead of
-    # averaging across states first and then ignoring the number, which is what this used
-    # to do -- the units figure below actually moves with how generous the rate really is.
-    sub_rows = [x for x in basket if x.get("subsidy_pct") is not None]
-    sub_units = sum(x["units"] for x in sub_rows)
-    avg_subsidy = (sum(x["units"] * x["subsidy_pct"] for x in sub_rows) / sub_units) if sub_units else 0.0
-    if avg_subsidy >= 35:
-        prov = "real" if any(x["subsidy_provenance"] == "real" for x in sub_rows) else "allocated"
-        top_state = q("""SELECT state, sum(tiv) AS w FROM micromarket_ops
-                         WHERE archetype_id = ? GROUP BY 1 ORDER BY w DESC LIMIT 1""",
-                      [b.archetype_id])
-        state_name = top_state[0]["state"] if top_state else "its states"
-        # Calibrated so the reference point this heuristic always used -- roughly the 40%
-        # MP SMAM proxy rate -- still lands at the original 8% uplift; a genuinely richer
-        # or thinner scheme now scales proportionally instead of every archetype getting
-        # the same flat bump regardless of its real subsidy generosity.
-        units = round(deliveries * 0.08 * (avg_subsidy / 40.0))
-        if units > 0:
-            plays.append({
-                "play": f"Push the ~{avg_subsidy:.0f}% subsidy across this archetype's SKUs",
-                "owns": "policy",
-                "detail": f"demand-weighted subsidy rate across the archetype's own basket, "
-                          f"strongest in {state_name} "
-                          f"({'real rates' if prov == 'real' else 'national SMAM proxy'}); "
-                          f"scheme-linked demand scales with how generous the rate actually is",
-                "units": units, "tiv_reached": None, "mode": "grow",
-                "confidence": "arithmetic" if prov == "real" else "proxy",
-            })
-
-    # ---- the ceiling, and the product stop -------------------------------------------
-    rivals = _archetype_rivals(b.archetype_id, limit=4)
-    winnable = float(sum(x["winnable"] or 0 for x in rivals))
-    at_risk = float(sum(x["at_risk"] or 0 for x in rivals))
-
-    if r["bucket"] == "No product fit":
-        plays = [{
-            "play": "Fix the product before spending on selling",
-            "owns": "product",
-            "detail": f"product fit is {float(r['product_fit']):.0%}, below the floor. "
-                      f"At peer share this archetype would be worth "
-                      f"{fmt_units(demand * 0.10)} units a year — that is the prize for an "
-                      f"adapted {r['hp_belt']} product, not for more calls",
-            "units": 0, "tiv_reached": None, "confidence": "arithmetic", "mode": "stop",
-        }]
-    if r["bucket"] == "Defend" and at_risk > 0 and rivals:
-        plays.append({
-            "play": f"Hold the line against {rivals[0]['rival']}",
-            "owns": "retention",
-            "detail": f"{fmt_units(at_risk)} units sit in contests where a rival is closest and "
-                      f"our lead is narrow; service coverage here is "
-                      f"{float(r['service_coverage']):.0%}, and service is what defends a "
-                      f"stronghold rather than new selling",
-            "units": round(at_risk), "tiv_reached": None, "confidence": "estimated",
-            "mode": "protect",
-        })
-
-    # Protect plays lead in a Defend archetype -- the volume already ours is worth more than
-    # the volume we might add -- but they are never summed into the growth total.
-    plays.sort(key=lambda p: ((0 if p.get("mode") == "protect" else 1)
-                              if r["bucket"] == "Defend" else 0, -p["units"]))
-    # Rank nudge only -- the barrier assumption never touches a unit figure.
-    barrier_owner = {"finance": "approval", "service": "reach",
-                     "awareness": "effort", "product": "product"}.get(a.top_barrier)
-    if barrier_owner:
-        plays.sort(key=lambda p: (0 if p.get("mode") == "protect" and r["bucket"] == "Defend"
-                                  else 1 if p["owns"] == barrier_owner else 2, -p["units"]))
-
-    raw = float(sum(p["units"] for p in plays if p.get("mode") == "grow"))
-    headroom = max(demand * (1 - share), 0.0)
-    # Headroom is the only hard ceiling: we cannot sell more than the archetype's unclaimed
-    # demand. `winnable` is narrower -- volume in contests where a rival is closest and
-    # beatable -- so it is reported as context, not used to cap plays that grow the category
-    # for us rather than take from one named rival.
-    capped = min(raw, headroom)
-    for p in plays:
-        p["share_pts"] = round(p["units"] / demand * 100, 2)
-
-    return clean({
-        "archetype_id": b.archetype_id, "bucket": r["bucket"], "archetype": r["archetype"],
-        "hp_belt": r["hp_belt"], "provenance": "modelled",
-        "situation": {
-            "share": share, "leader": r["leader"], "leader_share": clean(r["leader_share"]),
-            "product_fit": float(r["product_fit"]), "demand": round(demand),
-            "deliveries": round(deliveries), "sales_coverage": float(r["sales_coverage"]),
-            "approval_rate": approval_now, "conversion_rate": conv,
-        },
-        "plays": plays,
-        "total": {"raw_units": round(raw), "capped_units": round(capped),
-                  "headroom": round(headroom), "winnable_ceiling": round(winnable),
-                  "capped_by": "headroom" if capped < raw else None},
-        "rivals": rivals, "at_risk": round(at_risk), "winnable": round(winnable),
-        "assumptions_used": a.model_dump(),
-    })
+    return playbook.build(b, product)
 
 
 # ---------------------------------------------------------------- agro-climate (REAL)

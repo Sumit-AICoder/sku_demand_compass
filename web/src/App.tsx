@@ -87,13 +87,15 @@ const STAGES: Stage[] = [
     ],
   },
   {
-    key: 'act', n: 4, name: 'Act', tagline: 'Know the archetype, then work it',
-    question: 'What do we actually do in this archetype, and what is it worth?',
-    output: 'An archetype briefing and a priced playbook',
+    key: 'act', n: 4, name: 'Act', tagline: 'Build the archetype playbook, then work it',
+    question: 'What do we actually do here, and how exactly do we do it?',
+    output: 'An execution playbook across seven use cases, priced and sequenced',
     views: [
-      ['act-summary', 'Archetype summary'],
       ['act-playbook', 'Playbook'],
-      // Hidden, not decommissioned -- the original Develop tab is one `true` from returning.
+      // Hidden, not decommissioned. Both are one `true` away from returning: the archetype
+      // briefing largely restates Review's archetype detail, and the Act page is now the
+      // plays alone -- but the code and its endpoint are still here.
+      ['act-summary', 'Archetype summary', true],
       ['playbooks', 'Playbooks (old)', true],
     ],
   },
@@ -144,10 +146,13 @@ const VIEW_INFO: Record<string, React.ReactNode> = {
     of place it is, how big it is, where we stand against every other OEM, what our funnel
     looks like, what has been moving sales, and what the next six months hold. Read it before
     the playbook.</>,
-  'act-playbook': <>What to do in that archetype, with every action priced in units a year,
-    share points and the fleet it brings within reach. Plays are built from competitor volume,
-    the dealer network, subsidy and the funnel; the survey inputs are yours to set until the
-    primary study lands.</>,
+  'act-playbook': <>The whole execution playbook for one scope — an archetype, or a single
+    district or micro-market inside it — across the seven Act use cases: network, customer
+    growth, product, inventory, activity plan, sales planning and incentives. Every play
+    carries what it is worth (units a year, share points, the fleet it brings within reach)
+    and how to execute it (steps, named micro-markets, cadence, owner, KPI). The customer
+    layer is modelled from village data until the primary study lands, and names its
+    evidence line by line.</>,
   targets: <>Turns a number into a plan for one Grow archetype: set the units you want and
     it back-solves the enquiries and BD activities needed at that archetype's own
     conversion rates, then ranks the levers — more activity, better conversion, wider

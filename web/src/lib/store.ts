@@ -30,10 +30,16 @@ interface State {
   selectedVillage?: string
   setSelectedVillage: (v?: string) => void
 
-  // the archetype the Act stage is scoped to -- shared so the summary and the playbook
-  // always describe the same one
+  // What the Act stage is scoped to: an archetype, optionally narrowed to one of its
+  // districts and then to a single micro-market. Held here rather than in the component so
+  // the scope survives a remount, and so the district and micro-market can never outlive
+  // the archetype they belong to -- setActArchetype clears both.
   actArchetype?: string
+  actDistrict?: string
+  actMicroMarket?: string
   setActArchetype: (a?: string) => void
+  setActDistrict: (d?: string) => void
+  setActMicroMarket: (m?: string) => void
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -54,7 +60,11 @@ export const useStore = create<State>((set, get) => ({
 
   setSelectedVillage: (v) => set({ selectedVillage: v }),
 
-  setActArchetype: (a) => set({ actArchetype: a }),
+  // Changing the archetype drops the narrower selections: a district id from the previous
+  // archetype matches none of the new one's micro-markets and the API would 404 on it.
+  setActArchetype: (a) => set({ actArchetype: a, actDistrict: undefined, actMicroMarket: undefined }),
+  setActDistrict: (d) => set({ actDistrict: d, actMicroMarket: undefined }),
+  setActMicroMarket: (m) => set({ actMicroMarket: m }),
 }))
 
 /** The geography level whose CHILDREN should currently be listed. */

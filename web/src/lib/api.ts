@@ -20,8 +20,15 @@ async function get<T>(path: string, params?: Record<string, string | number | un
   return r.json()
 }
 
+/**
+ * POST carries the product line the same way GET does. It did not, which is why switching
+ * to tractors left the playbook and the Act forecasts silently answering for implements --
+ * the toggle changed, the body did not, and the backend fell through to its own default.
+ * A body that sets `product` itself still wins.
+ */
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
+  const qs = new URLSearchParams({ product: useStore.getState().productLine })
+  const r = await fetch(`${BASE}${path}?${qs}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
